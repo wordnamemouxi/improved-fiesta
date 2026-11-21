@@ -1,10 +1,13 @@
 /**
  * Voice Input Plugin (plugins/voice-input.js)
- * 功能：真实麦克风语音输入（让角色真正听懂你说的话）
+ * 功能：仿微信/QQ 真实长按语音输入（按住说话、松开发送、上滑取消）
  * 1. 支持两种模式：
- *    - 浏览器内置语音识别（免额外 API、零费用，支持实时转文字）
+ *    - 浏览器内置语音识别（免额外 API、零费用，支持实时字幕预览）
  *    - Whisper / 兼容 /v1/audio/transcriptions 接口（真实录音上传，准确率最高、支持方言与中英混说）
- * 2. 在聊天室底部输入框旁增加「麦克风」按钮，点一下开始说话，再点一下停止（可选“说完自动发送”）。
+ * 2. 长按聊天室底部麦克风（含仿QQ底栏话筒图标）弹出真实语音录制浮层：
+ *    - 按住说话：动态声波 + 实时计时
+ *    - 上滑取消：切为红色取消状态，松手不发送
+ *    - 松开发送：自动转文字并以原生语音条形式发出，同时本地缓存原声可回听
  * 3. 在「API 设置」页提供语音识别模式与 Whisper API 配置（全宽竖排适配手机端）。
  */
 (() => {
@@ -17,6 +20,17 @@
     let mediaRecorder = null;
     let mediaStream = null;
     let audioChunks = [];
+
+    // 长按交互状态
+    let holdActive = false;
+    let holdCancelled = false;
+    let holdStartY = 0;
+    let holdStartTime = 0;
+    let holdTimerId = null;
+    let cancelPendingRecording = false;
+    let browserTranscriptFinal = '';
+    let browserTranscriptInterim = '';
+    let usingTouch = false;
 
     function loadConfig() {
         try {
@@ -37,8 +51,232 @@
         const btn = document.getElementById('uwu-mic-input-btn');
         if (!btn) return;
         btn.classList.toggle('uwu-mic-recording', Boolean(active));
+        btn.classList.toggle('recording', Boolean(active));
         btn.classList.toggle('uwu-mic-busy', Boolean(busy));
-        btn.title = active ? '正在录音，点击停止' : (busy ? '正在识别语音…' : '语音输入');
+        btn.title = active ? '松开发送，上滑取消' : (busy ? '正在识别语音…' : '按住说话');
+    }
+
+    // 仿微信/QQ 长按录音全屏浮层
+    function ensureHoldOverlay() {
+        let ov = document.getElementById('uwu-voice-hold-overlay');
+        if (ov) return ov;
+        if (!document.getElementById('uwu-voice-hold-style')) {
+            const st = document.createElement('style');
+            st.id = 'uwu-voice-hold-style';
+            st.textContent = `
+                #uwu-mic-input-btn {
+                    touch-action: none;
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -webkit-touch-callout: none;
+                }
+                #uwu-voice-hold-overlay {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 99999;
+                    display: none;
+                    flex-direction: column;
+                    justify-content: flex-end;
+                    align-items: center;
+                    background: rgba(0, 0, 0, 0.48);
+                    backdrop-filter: blur(4px);
+                    -webkit-backdrop-filter: blur(4px);
+                    user-select: none;
+                    -webkit-user-select: none;
+                    pointer-events: none;
+                    opacity: 0;
+                    transition: opacity 0.16s ease;
+                }
+                #uwu-voice-hold-overlay.visible {
+                    display: flex;
+                    opacity: 1;
+                }
+                .uwu-vh-card {
+                    width: min(260px, 76vw);
+                    margin-bottom: 42px;
+                    padding: 20px 18px 16px;
+                    border-radius: 20px;
+                    background: #95ec69;
+                    color: #1a2e12;
+                    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 10px;
+                    transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+                }
+                #uwu-voice-hold-overlay.cancel-mode .uwu-vh-card {
+                    background: #fa5151;
+                    color: #ffffff;
+                    transform: scale(0.96);
+                }
+                .uwu-vh-waves {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 5px;
+                    height: 36px;
+                }
+                .uwu-vh-bar {
+                    width: 4px;
+                    height: 10px;
+                    border-radius: 4px;
+                    background: currentColor;
+                    opacity: 0.85;
+                    animation: uwuVhPulse 0.75s ease-in-out infinite;
+                }
+                .uwu-vh-bar:nth-child(2) { animation-delay: 0.1s; }
+                .uwu-vh-bar:nth-child(3) { animation-delay: 0.2s; }
+                .uwu-vh-bar:nth-child(4) { animation-delay: 0.3s; }
+                .uwu-vh-bar:nth-child(5) { animation-delay: 0.15s; }
+                .uwu-vh-bar:nth-child(6) { animation-delay: 0.25s; }
+                .uwu-vh-bar:nth-child(7) { animation-delay: 0.05s; }
+                .uwu-vh-bar:nth-child(8) { animation-delay: 0.35s; }
+                .uwu-vh-bar:nth-child(9) { animation-delay: 0.12s; }
+                @keyframes uwuVhPulse {
+                    0%, 100% { height: 8px; opacity: 0.55; }
+                    50% { height: 30px; opacity: 1; }
+                }
+                #uwu-voice-hold-overlay.cancel-mode .uwu-vh-bar {
+                    animation-play-state: paused;
+                    height: 8px;
+                }
+                .uwu-vh-timer {
+                    font-size: 15px;
+                    font-weight: 600;
+                    font-variant-numeric: tabular-nums;
+                    letter-spacing: 0.5px;
+                }
+                .uwu-vh-preview {
+                    font-size: 13px;
+                    line-height: 1.4;
+                    max-height: 54px;
+                    overflow: hidden;
+                    text-align: center;
+                    opacity: 0.9;
+                    word-break: break-all;
+                }
+                .uwu-vh-cancel-zone {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    gap: 8px;
+                    margin-bottom: 22px;
+                }
+                .uwu-vh-cancel-circle {
+                    width: 56px;
+                    height: 56px;
+                    border-radius: 50%;
+                    background: rgba(255, 255, 255, 0.22);
+                    color: rgba(255, 255, 255, 0.85);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 22px;
+                    font-weight: 600;
+                    transition: transform 0.16s ease, background 0.16s ease, color 0.16s ease;
+                }
+                #uwu-voice-hold-overlay.cancel-mode .uwu-vh-cancel-circle {
+                    background: #ffffff;
+                    color: #fa5151;
+                    transform: scale(1.18);
+                }
+                .uwu-vh-hint {
+                    font-size: 13px;
+                    color: rgba(255, 255, 255, 0.92);
+                    letter-spacing: 0.3px;
+                }
+                .uwu-vh-arc {
+                    width: 120%;
+                    height: 112px;
+                    border-radius: 50% 50% 0 0 / 48px 48px 0 0;
+                    background: linear-gradient(180deg, rgba(245, 245, 245, 0.96) 0%, rgba(232, 232, 232, 0.98) 100%);
+                    color: #333;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 6px;
+                    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.2);
+                    transition: background 0.16s ease, color 0.16s ease;
+                }
+                #uwu-voice-hold-overlay.cancel-mode .uwu-vh-arc {
+                    background: rgba(56, 56, 56, 0.92);
+                    color: rgba(255, 255, 255, 0.65);
+                }
+                .uwu-vh-arc-label {
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+            `;
+            document.head.appendChild(st);
+        }
+        ov = document.createElement('div');
+        ov.id = 'uwu-voice-hold-overlay';
+        ov.innerHTML = `
+            <div class="uwu-vh-card">
+                <div class="uwu-vh-waves">
+                    <span class="uwu-vh-bar"></span><span class="uwu-vh-bar"></span><span class="uwu-vh-bar"></span>
+                    <span class="uwu-vh-bar"></span><span class="uwu-vh-bar"></span><span class="uwu-vh-bar"></span>
+                    <span class="uwu-vh-bar"></span><span class="uwu-vh-bar"></span><span class="uwu-vh-bar"></span>
+                </div>
+                <div class="uwu-vh-timer" id="uwu-vh-timer">00:00</div>
+                <div class="uwu-vh-preview" id="uwu-vh-preview"></div>
+            </div>
+            <div class="uwu-vh-cancel-zone">
+                <div class="uwu-vh-cancel-circle">✕</div>
+                <div class="uwu-vh-hint" id="uwu-vh-hint">上滑取消</div>
+            </div>
+            <div class="uwu-vh-arc">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                <span class="uwu-vh-arc-label" id="uwu-vh-arc-label">松开 发送</span>
+            </div>
+        `;
+        document.body.appendChild(ov);
+        return ov;
+    }
+
+    function showHoldOverlay() {
+        const ov = ensureHoldOverlay();
+        ov.classList.remove('cancel-mode');
+        ov.classList.add('visible');
+        const timerEl = document.getElementById('uwu-vh-timer');
+        const previewEl = document.getElementById('uwu-vh-preview');
+        const hintEl = document.getElementById('uwu-vh-hint');
+        const arcLabelEl = document.getElementById('uwu-vh-arc-label');
+        if (timerEl) timerEl.textContent = '00:00';
+        if (previewEl) previewEl.textContent = '';
+        if (hintEl) hintEl.textContent = '上滑取消';
+        if (arcLabelEl) arcLabelEl.textContent = '松开 发送';
+        if (holdTimerId) clearInterval(holdTimerId);
+        holdTimerId = setInterval(() => {
+            const sec = Math.max(0, Math.floor((Date.now() - holdStartTime) / 1000));
+            const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+            const ss = String(sec % 60).padStart(2, '0');
+            const t = document.getElementById('uwu-vh-timer');
+            if (t) t.textContent = `${mm}:${ss}`;
+        }, 250);
+    }
+
+    function setHoldOverlayCancelState(isCancel) {
+        const ov = document.getElementById('uwu-voice-hold-overlay');
+        if (!ov) return;
+        ov.classList.toggle('cancel-mode', Boolean(isCancel));
+        const hintEl = document.getElementById('uwu-vh-hint');
+        const arcLabelEl = document.getElementById('uwu-vh-arc-label');
+        if (hintEl) hintEl.textContent = isCancel ? '松开手指，取消发送' : '上滑取消';
+        if (arcLabelEl) arcLabelEl.textContent = isCancel ? '取消发送' : '松开 发送';
+    }
+
+    function hideHoldOverlay() {
+        if (holdTimerId) {
+            clearInterval(holdTimerId);
+            holdTimerId = null;
+        }
+        const ov = document.getElementById('uwu-voice-hold-overlay');
+        if (ov) {
+            ov.classList.remove('visible', 'cancel-mode');
+        }
     }
 
     const userAudioCache = new Map();
@@ -90,72 +328,107 @@
         return sendAsVoiceMessage(text, audioBlobUrl);
     }
 
-    // 模式 A：浏览器内置实时语音识别
+    // 模式 A：浏览器内置实时语音识别（配合长按说话，支持实时预览）
     function startBrowserRecognition() {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SR) {
+            hideHoldOverlay();
+            holdActive = false;
             if (typeof window.showToast === 'function') {
                 window.showToast('当前浏览器不支持内置语音识别，请在 API 设置切换为 Whisper 录音接口');
             }
             return;
         }
         const cfg = loadConfig();
+        browserTranscriptFinal = '';
+        browserTranscriptInterim = '';
+        cancelPendingRecording = false;
+
         recognition = new SR();
         recognition.lang = cfg.lang || 'zh-CN';
-        recognition.interimResults = false;
+        recognition.interimResults = true;
         recognition.maxAlternatives = 1;
-        recognition.continuous = false;
+        recognition.continuous = true;
 
         isRecording = true;
         updateMicBtnState(true);
-        if (typeof window.showToast === 'function') window.showToast('请开始说话，说完再点一次停止');
 
         recognition.onresult = (event) => {
-            const transcript = event?.results?.[0]?.[0]?.transcript || '';
-            if (transcript.trim()) {
-                fillOrSendText(transcript);
-            } else if (typeof window.showToast === 'function') {
-                window.showToast('未识别到清晰语音');
+            let fin = '';
+            let inter = '';
+            for (let i = 0; i < event.results.length; i++) {
+                const res = event.results[i];
+                const txt = res[0]?.transcript || '';
+                if (res.isFinal) fin += txt;
+                else inter += txt;
             }
+            browserTranscriptFinal = fin;
+            browserTranscriptInterim = inter;
+            const previewEl = document.getElementById('uwu-vh-preview');
+            if (previewEl) previewEl.textContent = (fin + inter).trim().slice(-40);
         };
         recognition.onerror = (event) => {
             isRecording = false;
             updateMicBtnState(false);
             const code = event?.error || 'unknown';
             if (code === 'not-allowed') {
+                hideHoldOverlay();
+                holdActive = false;
                 if (typeof window.showToast === 'function') window.showToast('麦克风权限被拒绝，请在浏览器设置中允许麦克风');
-            } else if (code !== 'aborted') {
+            } else if (code !== 'aborted' && code !== 'no-speech' && !cancelPendingRecording) {
                 if (typeof window.showToast === 'function') window.showToast(`语音识别失败 (${code})`);
             }
         };
         recognition.onend = () => {
             isRecording = false;
             updateMicBtnState(false);
+            const finalText = (browserTranscriptFinal + browserTranscriptInterim).trim();
+            const wasCancelled = cancelPendingRecording;
             recognition = null;
+            if (!wasCancelled) {
+                if (finalText) {
+                    fillOrSendText(finalText);
+                } else if (typeof window.showToast === 'function') {
+                    window.showToast('未识别到清晰语音');
+                }
+            }
         };
         try {
             recognition.start();
         } catch (e) {
             isRecording = false;
             updateMicBtnState(false);
+            hideHoldOverlay();
+            holdActive = false;
         }
     }
 
     // 模式 B：真实录音并调用 Whisper /v1/audio/transcriptions 接口转文字
     async function startWhisperRecording() {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            hideHoldOverlay();
+            holdActive = false;
             if (typeof window.showToast === 'function') window.showToast('当前环境不支持麦克风录音');
             return;
         }
         const cfg = loadConfig();
         const apiKey = (cfg.apiKey || window.db?.apiSettings?.key || '').trim();
         if (!apiKey && !(cfg.endpoint || '').trim()) {
+            hideHoldOverlay();
+            holdActive = false;
             if (typeof window.showToast === 'function') window.showToast('请先在 API 设置中填写 Whisper 语音识别 Key 或接口');
             return;
         }
 
+        cancelPendingRecording = false;
         try {
-            mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // 若在权限/设备初始化期间用户已经松手，立即释放麦克风并中止
+            if (!holdActive) {
+                try { stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                return;
+            }
+            mediaStream = stream;
             const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
                 : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
             mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
@@ -166,11 +439,14 @@
             };
 
             mediaRecorder.onstop = async () => {
-                try { mediaStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                try { if (mediaStream) mediaStream.getTracks().forEach(t => t.stop()); } catch (e) {}
                 mediaStream = null;
                 isRecording = false;
-                if (!audioChunks.length) {
-                    updateMicBtnState(false);
+                const wasCancelled = cancelPendingRecording;
+                if (wasCancelled || !audioChunks.length) {
+                    updateMicBtnState(false, false);
+                    mediaRecorder = null;
+                    audioChunks = [];
                     return;
                 }
                 updateMicBtnState(false, true);
@@ -210,26 +486,24 @@
             mediaRecorder.start();
             isRecording = true;
             updateMicBtnState(true);
-            if (typeof window.showToast === 'function') window.showToast('正在录音，说完点击麦克风停止并识别');
         } catch (err) {
             isRecording = false;
+            holdActive = false;
+            hideHoldOverlay();
             updateMicBtnState(false);
             if (typeof window.showToast === 'function') window.showToast('无法打开麦克风，请检查浏览器权限');
         }
     }
 
-    function toggleRecording() {
-        if (isRecording) {
-            if (recognition) {
-                try { recognition.stop(); } catch (e) {}
-            }
-            if (mediaRecorder && mediaRecorder.state === 'recording') {
-                try { mediaRecorder.stop(); } catch (e) {}
-            }
-            isRecording = false;
-            updateMicBtnState(false);
-            return;
-        }
+    function startHoldRecording(clientY) {
+        if (holdActive) return;
+        holdActive = true;
+        holdCancelled = false;
+        cancelPendingRecording = false;
+        holdStartY = clientY || 0;
+        holdStartTime = Date.now();
+        try { if (navigator.vibrate) navigator.vibrate(18); } catch (e) {}
+        showHoldOverlay();
         const cfg = loadConfig();
         if (cfg.mode === 'whisper') {
             startWhisperRecording();
@@ -238,7 +512,45 @@
         }
     }
 
-    // 1. 注入聊天室底部左侧「麦克风」按钮（仿微信放在 + 号右侧、输入框左侧，彻底避开右侧生成/发送按钮）
+    function moveHoldRecording(clientY) {
+        if (!holdActive) return;
+        const deltaUp = holdStartY - (clientY || 0);
+        const shouldCancel = deltaUp > 55;
+        if (shouldCancel !== holdCancelled) {
+            holdCancelled = shouldCancel;
+            setHoldOverlayCancelState(shouldCancel);
+            try { if (navigator.vibrate) navigator.vibrate(12); } catch (e) {}
+        }
+    }
+
+    function endHoldRecording(forceCancel = false) {
+        if (!holdActive) return;
+        holdActive = false;
+        hideHoldOverlay();
+        const elapsed = Date.now() - holdStartTime;
+        const tooShort = !forceCancel && !holdCancelled && elapsed < 450;
+        cancelPendingRecording = Boolean(forceCancel || holdCancelled || tooShort);
+
+        if (recognition) {
+            try {
+                if (cancelPendingRecording) recognition.abort();
+                else recognition.stop();
+            } catch (e) {}
+        }
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            try { mediaRecorder.stop(); } catch (e) {}
+        }
+        isRecording = false;
+        updateMicBtnState(false);
+
+        if (holdCancelled || forceCancel) {
+            if (typeof window.showToast === 'function') window.showToast('已取消发送');
+        } else if (tooShort) {
+            if (typeof window.showToast === 'function') window.showToast('按住说话、松开发送（说话时间太短）');
+        }
+    }
+
+    // 1. 注入聊天室底部左侧「麦克风」按钮（支持仿微信/QQ 长按说话、松开发送、上滑取消）
     function injectMicButton() {
         const expandBtn = document.getElementById('toggle-expansion-btn');
         const inputWrap = document.querySelector('#message-input-default .input-wrapper');
@@ -251,13 +563,54 @@
         btn.id = 'uwu-mic-input-btn';
         btn.className = 'icon-btn circle-bg uwu-mic-btn';
         btn.style.flexShrink = '0';
-        btn.title = '语音输入';
+        btn.title = '按住说话';
         btn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>`;
-        btn.addEventListener('click', (e) => {
+
+        btn.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // 移动端触摸长按：按住录、上滑取消、松开发送
+        btn.addEventListener('touchstart', (e) => {
+            usingTouch = true;
             e.preventDefault();
             e.stopPropagation();
-            toggleRecording();
+            const y = e.touches && e.touches[0] ? e.touches[0].clientY : 0;
+            startHoldRecording(y);
+        }, { passive: false });
+
+        btn.addEventListener('touchmove', (e) => {
+            if (!holdActive) return;
+            e.preventDefault();
+            const y = e.touches && e.touches[0] ? e.touches[0].clientY : 0;
+            moveHoldRecording(y);
+        }, { passive: false });
+
+        btn.addEventListener('touchend', (e) => {
+            if (!holdActive) return;
+            e.preventDefault();
+            e.stopPropagation();
+            endHoldRecording(false);
+        }, { passive: false });
+
+        btn.addEventListener('touchcancel', () => {
+            if (holdActive) endHoldRecording(true);
         });
+
+        // 桌面端鼠标长按兼容
+        btn.addEventListener('mousedown', (e) => {
+            if (usingTouch || e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            startHoldRecording(e.clientY);
+            const onMove = (ev) => moveHoldRecording(ev.clientY);
+            const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                endHoldRecording(false);
+            };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        });
+
         if (expandBtn) bar.insertBefore(btn, expandBtn.nextSibling);
         else bar.insertBefore(btn, inputWrap);
     }

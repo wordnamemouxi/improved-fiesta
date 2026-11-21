@@ -118,9 +118,11 @@
                 body,
                 icon: safeIcon,
                 badge: './icon-192.png',
-                tag: `uwu-msg-${chat.id}`,
-                renotify: true,
-                data: { chatId: chat.id }
+                tag: `uwu-msg-${chat.id}-${Date.now()}`,
+                renotify: false,
+                silent: true,
+                timestamp: Date.now(),
+                data: { chatId: chat.id, chatType: chat.members ? 'group' : 'private' }
             };
             if (await deliverNotificationSafe(title, opts, chat.id)) return;
         } catch (e) {
@@ -149,7 +151,8 @@
                 body: '系统弹窗通知已开启（锁屏隐私请在手机系统设置→通知里开启隐藏详情）',
                 icon: testIcon,
                 badge: './icon-192.png',
-                tag: 'uwu-test-notify'
+                tag: 'uwu-test-notify',
+                silent: true
             }, ch?.id || '');
             if (!ok && typeof window.showToast === 'function') {
                 window.showToast('系统拦截了弹窗，请检查手机通知权限或重新打开桌面应用');
@@ -235,7 +238,7 @@
                 }
             }
             const res = await origHandle.call(this, cleaned, chat, targetChatId, targetChatType, isBackground);
-            if (isBackground && targetChatType === 'private' && chat) {
+            if (chat) {
                 showSystemNotification(chat, extractCleanPreview(cleaned)).catch(() => {});
             }
             return res;
@@ -548,6 +551,8 @@
         }
         syncApiSw();
     }
+
+
 
     function bootstrap() {
         hookCoreFunctions();

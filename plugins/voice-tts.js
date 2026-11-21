@@ -111,7 +111,7 @@
         }
     }
 
-    async function synthesizeSpeech({ provider, apiKey, groupId, endpoint, model, voiceId, text, speed = 1.0 }) {
+    async function synthesizeSpeech({ provider, apiKey, groupId, endpoint, model, voiceId, text, speed = 1.0, pitch = 0, emotion = '', stylePrefix = '' }) {
         const cleanText = (text || '').trim();
         if (!cleanText) throw new Error('语音内容为空');
         if (!apiKey && provider !== 'custom') throw new Error('请先在 API 设置中填写语音 API Key');
@@ -132,19 +132,25 @@
                 latency: 'normal'
             };
         } else if (provider === 'minimax') {
-            const base = (endpoint || '').trim() || 'https://api.minimax.chat/v1/t2a_v2';
+            const base = (endpoint || '').trim() || 'https://api.minimax.cn/v1/t2a_v2';
             url = groupId ? `${base}${base.includes('?') ? '&' : '?'}GroupId=${encodeURIComponent(groupId)}` : base;
             headers['Authorization'] = `Bearer ${apiKey}`;
+            const prefix = (stylePrefix || '').trim();
+            const spokenText = prefix ? `${prefix} ${cleanText}` : cleanText;
+            const voiceSetting = {
+                voice_id: voiceId,
+                speed: Math.max(0.5, Math.min(2.0, Number(speed) || 1.0)),
+                vol: 1,
+                pitch: Math.max(-12, Math.min(12, Math.round(Number(pitch) || 0)))
+            };
+            if (emotion && String(emotion).trim()) {
+                voiceSetting.emotion = String(emotion).trim();
+            }
             body = {
-                model: 'speech-02-hd',
-                text: cleanText,
+                model: (model || '').trim() || 'speech-2.8-hd',
+                text: spokenText,
                 stream: false,
-                voice_setting: {
-                    voice_id: voiceId,
-                    speed: Number(speed) || 1.0,
-                    vol: 1,
-                    pitch: 0
-                },
+                voice_setting: voiceSetting,
                 audio_setting: {
                     sample_rate: 32000,
                     bitrate: 128000,
@@ -227,7 +233,10 @@
         const cfg = loadConfig();
         const provider = chat?.voiceTts?.provider || cfg.provider || 'siliconflow';
         const voiceId = (chat?.voiceTts?.voiceId || '').trim();
-        const speed = chat?.voiceTts?.speed || 1.0;
+        const speed = chat?.voiceTts?.speed ?? 1.0;
+        const pitch = chat?.voiceTts?.pitch ?? 0;
+        const emotion = (chat?.voiceTts?.emotion || '').trim();
+        const stylePrefix = (chat?.voiceTts?.stylePrefix || '').trim();
         const cacheKey = getVoiceCacheKey(chat?.id, msgId, text);
 
         try {
@@ -260,7 +269,10 @@
                     model: (cfg.model || '').trim(),
                     voiceId,
                     text,
-                    speed
+                    speed,
+                    pitch,
+                    emotion,
+                    stylePrefix
                 });
                 await saveAudioBlob(cacheKey, audioBlob);
                 blobUrl = URL.createObjectURL(audioBlob);
@@ -322,6 +334,9 @@
     }
 
     async function fetchTtsModels(provider, endpoint, apiKey) {
+        if (provider === 'minimax' && !(endpoint || '').trim()) {
+            return ['speech-2.8-hd', 'speech-2.8-turbo', 'speech-2.6-hd', 'speech-2.6-turbo', 'speech-02-hd', 'speech-02-turbo'];
+        }
         const url = resolveModelsUrl(endpoint, provider);
         if (!url) throw new Error('该平台使用固定音色接口，请直接在角色设置填写音色 ID，或填入自定义接口地址后拉取');
         const headers = {};
@@ -430,6 +445,12 @@
         const sw = document.getElementById('setting-voice-tts-enabled');
         const vid = document.getElementById('setting-voice-tts-id');
         const prov = document.getElementById('setting-voice-tts-provider');
+        const spd = document.getElementById('setting-voice-tts-speed');
+        const spdVal = document.getElementById('setting-voice-tts-speed-val');
+        const pit = document.getElementById('setting-voice-tts-pitch');
+        const pitVal = document.getElementById('setting-voice-tts-pitch-val');
+        const emo = document.getElementById('setting-voice-tts-emotion');
+        const sty = document.getElementById('setting-voice-tts-style');
         if (!sw || !vid || !prov) return;
         if (typeof currentChatId === 'undefined' || !window.db?.characters) return;
         const ch = window.db.characters.find(c => c.id === currentChatId);
@@ -437,6 +458,14 @@
         sw.checked = ch.voiceTts?.enabled === true;
         vid.value = ch.voiceTts?.voiceId || '';
         prov.value = ch.voiceTts?.provider || '';
+        const speedNum = Number(ch.voiceTts?.speed ?? 1.0);
+        const pitchNum = Math.round(Number(ch.voiceTts?.pitch ?? 0));
+        if (spd) spd.value = String(speedNum);
+        if (spdVal) spdVal.textContent = `${speedNum.toFixed(2)}x`;
+        if (pit) pit.value = String(pitchNum);
+        if (pitVal) pitVal.textContent = pitchNum > 0 ? `+${pitchNum}` : String(pitchNum);
+        if (emo) emo.value = ch.voiceTts?.emotion || '';
+        if (sty) sty.value = ch.voiceTts?.stylePrefix || '';
     }
 
     function injectCharVoiceCard() {
@@ -480,6 +509,27 @@
                         <input type="text" id="setting-voice-tts-id" placeholder="填该角色的音色 ID / Reference ID" style="flex:1;min-width:0;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #d0d7de;font-size:12px;">
                         <button type="button" id="setting-voice-tts-test" style="flex-shrink:0;padding:6px 12px;border-radius:6px;border:1px solid #d0d7de;background:#fff;font-size:12px;cursor:pointer;">试听</button>
                     </div>
+                    <div style="display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;font-size:12px;color:#555;">
+                        <span style="flex-shrink:0;">语速</span>
+                        <input type="range" id="setting-voice-tts-speed" min="0.5" max="1.6" step="0.05" value="1.0" style="flex:1;min-width:0;">
+                        <span id="setting-voice-tts-speed-val" style="width:42px;text-align:right;font-variant-numeric:tabular-nums;">1.00x</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;font-size:12px;color:#555;">
+                        <span style="flex-shrink:0;">音调</span>
+                        <input type="range" id="setting-voice-tts-pitch" min="-12" max="12" step="1" value="0" style="flex:1;min-width:0;">
+                        <span id="setting-voice-tts-pitch-val" style="width:42px;text-align:right;font-variant-numeric:tabular-nums;">0</span>
+                    </div>
+                    <select id="setting-voice-tts-emotion" style="width:100%;box-sizing:border-box;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #d0d7de;background:#fff;font-size:12px;">
+                        <option value="">默认情绪（MiniMax 自然发挥）</option>
+                        <option value="happy">轻快带笑意 (happy)</option>
+                        <option value="calm">松弛沉稳 (calm)</option>
+                        <option value="fluent">自然流畅口语 (fluent · 2.6/2.8)</option>
+                        <option value="whisper">轻微低语贴耳 (whisper · 2.6/2.8)</option>
+                        <option value="sad">温柔低落 (sad)</option>
+                        <option value="surprised">惊喜活泼 (surprised)</option>
+                        <option value="angry">傲娇生气 (angry)</option>
+                    </select>
+                    <input type="text" id="setting-voice-tts-style" placeholder="隐藏语气/气口前缀（仅语音生效，如 (chuckle) 或 (sighs)）" style="width:100%;box-sizing:border-box;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #d0d7de;font-size:12px;">
                 </div>
             </div>
         `;
@@ -488,17 +538,31 @@
         const sw = document.getElementById('setting-voice-tts-enabled');
         const vid = document.getElementById('setting-voice-tts-id');
         const prov = document.getElementById('setting-voice-tts-provider');
+        const spd = document.getElementById('setting-voice-tts-speed');
+        const spdVal = document.getElementById('setting-voice-tts-speed-val');
+        const pit = document.getElementById('setting-voice-tts-pitch');
+        const pitVal = document.getElementById('setting-voice-tts-pitch-val');
+        const emo = document.getElementById('setting-voice-tts-emotion');
+        const sty = document.getElementById('setting-voice-tts-style');
         const testBtn = document.getElementById('setting-voice-tts-test');
 
         const persistCharVoice = async () => {
             if (typeof currentChatId === 'undefined' || !window.db?.characters) return;
             const ch = window.db.characters.find(c => c.id === currentChatId);
             if (!ch) return;
+            const speedNum = Number(spd?.value ?? 1.0);
+            const pitchNum = Math.round(Number(pit?.value ?? 0));
+            if (spdVal) spdVal.textContent = `${speedNum.toFixed(2)}x`;
+            if (pitVal) pitVal.textContent = pitchNum > 0 ? `+${pitchNum}` : String(pitchNum);
             ch.voiceTts = {
                 ...(ch.voiceTts || {}),
                 enabled: sw.checked,
                 voiceId: vid.value.trim(),
-                provider: prov.value
+                provider: prov.value,
+                speed: speedNum,
+                pitch: pitchNum,
+                emotion: emo?.value || '',
+                stylePrefix: (sty?.value || '').trim()
             };
             if (typeof window.saveData === 'function') await window.saveData();
         };
@@ -506,6 +570,19 @@
         sw.addEventListener('change', persistCharVoice);
         vid.addEventListener('change', persistCharVoice);
         prov.addEventListener('change', persistCharVoice);
+        if (spd) {
+            spd.addEventListener('input', () => { if (spdVal) spdVal.textContent = `${Number(spd.value).toFixed(2)}x`; });
+            spd.addEventListener('change', persistCharVoice);
+        }
+        if (pit) {
+            pit.addEventListener('input', () => {
+                const v = Math.round(Number(pit.value));
+                if (pitVal) pitVal.textContent = v > 0 ? `+${v}` : String(v);
+            });
+            pit.addEventListener('change', persistCharVoice);
+        }
+        if (emo) emo.addEventListener('change', persistCharVoice);
+        if (sty) sty.addEventListener('change', persistCharVoice);
         testBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
             await persistCharVoice();
@@ -513,8 +590,8 @@
                 ? window.db.characters.find(c => c.id === currentChatId)
                 : null;
             if (!ch) return;
-            const sample = `你好呀，我是${ch.remarkName || ch.realName || '你的专属语音'}。`;
-            await playVoiceForBubble(testBtn, sample, ch, 'preview_' + ch.id);
+            const sample = `算你还有点良心，咱俩这镜子结实着呢，摔不碎。`;
+            await playVoiceForBubble(testBtn, sample, ch, 'preview_' + ch.id, { forceRegenerate: true });
         });
 
         syncCharVoiceUi();
@@ -582,7 +659,10 @@
         const cfg = loadConfig();
         const provider = chat?.voiceTts?.provider || cfg.provider || 'fish';
         const voiceId = (chat?.voiceTts?.voiceId || '').trim();
-        const speed = chat?.voiceTts?.speed || 1.0;
+        const speed = chat?.voiceTts?.speed ?? 1.0;
+        const pitch = chat?.voiceTts?.pitch ?? 0;
+        const emotion = (chat?.voiceTts?.emotion || '').trim();
+        const stylePrefix = (chat?.voiceTts?.stylePrefix || '').trim();
         const cleanSpoken = extractSpokenForCall(text);
         if (!cleanSpoken) return;
 
@@ -599,7 +679,10 @@
                     model: (cfg.model || '').trim(),
                     voiceId,
                     text: cleanSpoken,
-                    speed
+                    speed,
+                    pitch,
+                    emotion,
+                    stylePrefix
                 });
                 blobUrl = callBlob instanceof Blob ? URL.createObjectURL(callBlob) : callBlob;
                 audioCache.set(cacheKey, blobUrl);

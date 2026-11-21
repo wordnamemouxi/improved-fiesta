@@ -59,6 +59,34 @@
         return txt.length > 60 ? txt.slice(0, 60) + '…' : txt;
     }
 
+    function navigateToChatSafe(chatId, chatType = 'private') {
+        if (!chatId) return;
+        try {
+            if (typeof currentChatId !== 'undefined') currentChatId = chatId;
+        } catch (e) {}
+        try {
+            if (typeof currentChatType !== 'undefined') currentChatType = chatType;
+        } catch (e) {}
+        window.currentChatId = chatId;
+        window.currentChatType = chatType;
+        try {
+            const sidebar = document.getElementById('chat-settings-sidebar');
+            if (sidebar) sidebar.classList.remove('open');
+        } catch (e) {}
+        if (typeof window.openChatRoom === 'function') {
+            window.openChatRoom(chatId, chatType);
+        }
+        try {
+            if (typeof window.switchScreen === 'function') {
+                window.switchScreen('chat-room-screen');
+            } else {
+                document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+                const cr = document.getElementById('chat-room-screen');
+                if (cr) cr.classList.add('active');
+            }
+        } catch (e) {}
+    }
+
     async function getActiveSwRegistration() {
         if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
         try {
@@ -94,7 +122,6 @@
                         body: opts.body,
                         tag: opts.tag,
                         renotify: Boolean(opts.renotify),
-                        silent: Boolean(opts.silent),
                         data: opts.data || {}
                     };
                     await reg.showNotification(title, minimalOpts);
@@ -109,7 +136,7 @@
             const n = new Notification(title, opts);
             n.onclick = () => {
                 window.focus();
-                if (chatId && typeof window.openChatRoom === 'function') window.openChatRoom(chatId, 'private');
+                if (chatId) navigateToChatSafe(chatId, opts?.data?.chatType || 'private');
                 n.close();
             };
             return { ok: true, via: 'window' };
@@ -151,8 +178,7 @@
             const opts = {
                 body,
                 tag: `uwu-msg-${chat.id}-${Date.now()}`,
-                renotify: false,
-                silent: true,
+                renotify: true,
                 timestamp: Date.now(),
                 data: { chatId: chat.id, chatType: chat.members ? 'group' : 'private' }
             };
@@ -189,16 +215,15 @@
             const rawAvatar = (ch?.avatar && typeof ch.avatar === 'string') ? ch.avatar.trim() : '';
             const testIcon = (rawAvatar && (!rawAvatar.startsWith('data:') || rawAvatar.length <= 180000)) ? rawAvatar : '';
             const opts = {
-                body: '测试成功：这是一条静音无震动的系统通知（若没看到横幅，请下拉手机通知栏并检查 Edge 通知权限）',
+                body: '测试成功：如果看到顶部横幅就说明后台弹窗完全打通啦！',
                 tag: `uwu-test-${Date.now()}`,
-                renotify: false,
-                silent: true,
+                renotify: true,
                 data: { chatId: ch?.id || '' }
             };
             if (testIcon) opts.icon = testIcon;
             const res = await deliverNotificationSafe(testTitle, opts, ch?.id || '');
             if (res.ok) {
-                if (typeof window.showToast === 'function') window.showToast('已发送测试系统通知（静音无震动），请看状态栏/通知栏');
+                if (typeof window.showToast === 'function') window.showToast('已发送测试系统通知，请看顶部横幅');
                 return true;
             } else {
                 if (typeof window.showToast === 'function') window.showToast(`系统通知发送失败：${res.error || '请刷新页面后重试'}`);
@@ -209,16 +234,23 @@
         }
     }
 
-    // 30秒后自动发消息一键测试（供验证切角色/最小化后台接收通知）
-    let test30sTimer = null;
-    let test30sTick = null;
-    let test30sTargetAt = 0;
+    // 30秒后自动发消息一键测试（严格按角色 ID 隔离，互不串扰）
+    const test30sMap = new Map(); // charId -> { timer, tick, targetAt }
+
+    function getActiveCharId() {
+        try {
+            if (typeof currentChatId !== 'undefined' && currentChatId) return currentChatId;
+        } catch (e) {}
+        return window.currentChatId || '';
+    }
 
     function refreshTest30sBtn() {
         const btn = document.getElementById('uwu-test-30s-btn');
         if (!btn) return;
-        const leftSec = Math.max(0, Math.ceil((test30sTargetAt - Date.now()) / 1000));
-        if (test30sTimer && leftSec > 0) {
+        const cid = getActiveCharId();
+        const entry = cid ? test30sMap.get(cid) : null;
+        const leftSec = entry ? Math.max(0, Math.ceil((entry.targetAt - Date.now()) / 1000)) : 0;
+        if (entry && leftSec > 0) {
             btn.textContent = `倒计时 ${leftSec}s（点此取消）`;
             btn.style.borderColor = '#d95c6c';
             btn.style.color = '#d95c6c';
@@ -229,45 +261,49 @@
         }
     }
 
+    function clearTest30sForChar(charId) {
+        const entry = test30sMap.get(charId);
+        if (!entry) return;
+        if (entry.timer) clearTimeout(entry.timer);
+        if (entry.tick) clearInterval(entry.tick);
+        test30sMap.delete(charId);
+    }
+
     function toggleTest30sAutoReply() {
-        if (test30sTimer) {
-            clearTimeout(test30sTimer);
-            test30sTimer = null;
-            if (test30sTick) { clearInterval(test30sTick); test30sTick = null; }
-            test30sTargetAt = 0;
-            refreshTest30sBtn();
-            if (typeof window.showToast === 'function') window.showToast('已取消 30 秒测试预约');
-            return;
-        }
-        if (typeof currentChatId === 'undefined' || !window.db?.characters) {
+        const cid = getActiveCharId();
+        if (!cid || !window.db?.characters) {
             if (typeof window.showToast === 'function') window.showToast('请先进入某个角色的聊天设置');
             return;
         }
-        const ch = window.db.characters.find(c => c.id === currentChatId);
+        const ch = window.db.characters.find(c => c.id === cid);
         if (!ch) return;
-        const targetId = ch.id;
+        if (test30sMap.has(cid)) {
+            clearTest30sForChar(cid);
+            refreshTest30sBtn();
+            if (typeof window.showToast === 'function') window.showToast(`已取消「${ch.remarkName || ch.realName}」的 30 秒测试`);
+            return;
+        }
         const targetName = ch.remarkName || ch.realName || '角色';
-        test30sTargetAt = Date.now() + 30000;
+        const entry = { timer: null, tick: null, targetAt: Date.now() + 30000 };
+        test30sMap.set(cid, entry);
         refreshTest30sBtn();
         if (typeof window.showToast === 'function') {
-            window.showToast(`已预约：30秒后让「${targetName}」自动发消息，现在可切去别的角色或最小化网页测试`);
+            window.showToast(`已预约：30秒后让「${targetName}」自动发消息，现在可切去别的角色或最小化测试`);
         }
-        test30sTick = setInterval(() => {
-            if (!test30sTimer || Date.now() >= test30sTargetAt) {
-                clearInterval(test30sTick);
-                test30sTick = null;
+        entry.tick = setInterval(() => {
+            if (!test30sMap.has(cid) || Date.now() >= entry.targetAt) {
+                clearInterval(entry.tick);
+                entry.tick = null;
             }
             refreshTest30sBtn();
         }, 1000);
-        test30sTimer = setTimeout(async () => {
-            test30sTimer = null;
-            if (test30sTick) { clearInterval(test30sTick); test30sTick = null; }
-            test30sTargetAt = 0;
+        entry.timer = setTimeout(async () => {
+            clearTest30sForChar(cid);
             refreshTest30sBtn();
             try {
-                pendingReasonMap.set(targetId, '随手想起你，自然发一句日常消息打招呼');
+                pendingReasonMap.set(cid, '随手想起你，自然发一句日常消息打招呼');
                 if (typeof window.getAiReply === 'function') {
-                    await window.getAiReply(targetId, 'private', true);
+                    await window.getAiReply(cid, 'private', true);
                 }
             } catch (e) {
                 console.warn('[SmartAutoReply] 30s test trigger failed:', e);
@@ -587,18 +623,42 @@
         return true;
     }
 
+    function hookLoadSettingsToSidebar() {
+        if (typeof window.loadSettingsToSidebar === 'function' && !window.loadSettingsToSidebar.__smartWrapped) {
+            const origLoad = window.loadSettingsToSidebar;
+            const wrapped = function () {
+                const ret = origLoad.apply(this, arguments);
+                injectSmartSettingsUI();
+                syncUiFromChar();
+                return ret;
+            };
+            wrapped.__smartWrapped = true;
+            window.loadSettingsToSidebar = wrapped;
+        }
+        if (typeof window.openChatRoom === 'function' && !window.openChatRoom.__smartWrapped) {
+            const origOpen = window.openChatRoom;
+            const wrappedOpen = function (chatId, type) {
+                const ret = origOpen.apply(this, arguments);
+                setTimeout(() => syncUiFromChar(), 0);
+                return ret;
+            };
+            wrappedOpen.__smartWrapped = true;
+            window.openChatRoom = wrappedOpen;
+        }
+    }
+
     function observeSettingsScreen() {
-        const settingsScreen = document.getElementById('chat-settings-screen');
-        if (!settingsScreen || settingsScreen.__smartObserved) return;
-        settingsScreen.__smartObserved = true;
+        const sidebar = document.getElementById('chat-settings-sidebar') || document.getElementById('chat-settings-screen');
+        if (!sidebar || sidebar.__smartObserved) return;
+        sidebar.__smartObserved = true;
         const obs = new MutationObserver(() => {
             if (!document.getElementById('setting-smart-auto-reply-enabled')) {
                 injectSmartSettingsUI();
-            } else if (settingsScreen.classList.contains('active')) {
+            } else if (sidebar.classList.contains('open') || sidebar.classList.contains('active')) {
                 syncUiFromChar();
             }
         });
-        obs.observe(settingsScreen, { childList: true, attributes: true, attributeFilter: ['class'] });
+        obs.observe(sidebar, { childList: true, attributes: true, attributeFilter: ['class'] });
     }
 
     function hookCoreFunctions() {
@@ -607,6 +667,7 @@
         hookSendMessage();
         hookCheckAutoReply();
         hookInjectChatSettingsHtml();
+        hookLoadSettingsToSidebar();
     }
 
 
@@ -714,8 +775,8 @@
     if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
         navigator.serviceWorker.addEventListener('message', event => {
             const d = event.data;
-            if (d && d.type === 'uwu-open-chat' && d.chatId && typeof window.openChatRoom === 'function') {
-                window.openChatRoom(d.chatId, 'private');
+            if (d && d.type === 'uwu-open-chat' && d.chatId) {
+                navigateToChatSafe(d.chatId, d.chatType || 'private');
             }
         });
     }
@@ -724,7 +785,7 @@
         const openId = qp.get('openChat');
         if (openId) {
             setTimeout(() => {
-                if (typeof window.openChatRoom === 'function') window.openChatRoom(openId, 'private');
+                navigateToChatSafe(openId, 'private');
             }, 900);
         }
     } catch (e) {}

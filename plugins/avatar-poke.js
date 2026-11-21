@@ -1,16 +1,42 @@
-// === 持久化同步：确保自定义“我的拍一拍文案”刷新后永不丢失 ===
-const MY_POKE_STORAGE_KEY = 'uwu_my_poke_text';
+// === 按角色完全隔离“我的拍一拍文案”并持久化 ===
+const MY_POKE_CHAR_PREFIX = 'uwu_my_poke_text_';
+function getCharMyPokeKey(chat) {
+    return chat && chat.id ? `${MY_POKE_CHAR_PREFIX}${chat.id}` : '';
+}
+function getCharMyPokeText(chat) {
+    if (!chat) return '';
+    if (typeof chat.myPokeText === 'string') return chat.myPokeText.trim();
+    try {
+        const key = getCharMyPokeKey(chat);
+        const saved = key ? localStorage.getItem(key) : null;
+        if (saved !== null) {
+            chat.myPokeText = saved;
+            return saved.trim();
+        }
+    } catch (e) {}
+    return '';
+}
+function setCharMyPokeText(chat, val) {
+    if (!chat) return;
+    const clean = (val || '').trim();
+    chat.myPokeText = clean;
+    try {
+        const key = getCharMyPokeKey(chat);
+        if (key) localStorage.setItem(key, clean);
+    } catch (e) {}
+}
 function syncMyPokePersistence() {
     try {
-        if (typeof globalSettingKeys !== 'undefined' && Array.isArray(globalSettingKeys) && !globalSettingKeys.includes('myPokeText')) {
-            globalSettingKeys.push('myPokeText');
-        }
-        const saved = localStorage.getItem(MY_POKE_STORAGE_KEY);
-        if (typeof db !== 'undefined' && db) {
-            if (typeof db.myPokeText === 'string' && db.myPokeText.trim()) {
-                localStorage.setItem(MY_POKE_STORAGE_KEY, db.myPokeText.trim());
-            } else if (saved && !db.myPokeText) {
-                db.myPokeText = saved;
+        if (typeof db !== 'undefined' && db && Array.isArray(db.characters)) {
+            for (const ch of db.characters) {
+                if (!ch || !ch.id) continue;
+                const key = getCharMyPokeKey(ch);
+                if (typeof ch.myPokeText === 'string') {
+                    localStorage.setItem(key, ch.myPokeText);
+                } else {
+                    const saved = localStorage.getItem(key);
+                    if (saved !== null) ch.myPokeText = saved;
+                }
             }
         }
     } catch (e) {}
@@ -120,10 +146,10 @@ function openAvatarPokeModal() {
         pokeBox.className = 'uwu-poke-box';
         const myPokeLbl = document.createElement('label');
         myPokeLbl.className = 'uwu-poke-label';
-        myPokeLbl.textContent = '我的拍一拍文案（自定义）';
+        myPokeLbl.textContent = '我的拍一拍文案（仅对当前角色生效）';
         const myPokeInput = document.createElement('input');
         myPokeInput.type = 'text';
-        myPokeInput.value = db.myPokeText || '';
+        myPokeInput.value = getCharMyPokeText(chat);
         myPokeInput.placeholder = '例如：拍了拍我的脑袋';
         myPokeInput.className = 'uwu-poke-input';
         myPokeLbl.append(myPokeInput);
@@ -144,9 +170,7 @@ function openAvatarPokeModal() {
         savePokeBtn.textContent = '保存拍一拍设置';
         savePokeBtn.onclick = async () => {
             const val = myPokeInput.value.trim();
-            db.myPokeText = val;
-            try { localStorage.setItem(MY_POKE_STORAGE_KEY, val); } catch (e) {}
-            syncMyPokePersistence();
+            setCharMyPokeText(chat, val);
             chat.pokeText = aiPokeInput.value.trim();
             if (typeof saveData === 'function') await saveData();
             if (typeof showToast === 'function') showToast('拍一拍文案已保存');
@@ -262,7 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const isSelf = wrapper?.classList.contains('sent');
             const cName = chat.remarkName || chat.realName || chat.name || '对方';
             syncMyPokePersistence();
-            const mySavedPoke = (db.myPokeText || localStorage.getItem(MY_POKE_STORAGE_KEY) || '').trim();
+            const mySavedPoke = getCharMyPokeText(chat);
             const displayLine = isSelf
                 ? `你${mySavedPoke || '拍了拍自己'}`
                 : `你${(chat.pokeText || '').trim() || `拍了拍 ${cName}`}`;
@@ -309,13 +333,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.__uwuAiPokeHookLoaded) return;
     window.__uwuAiPokeHookLoaded = true;
 
-    function getMyPokeTextSafe() {
-        syncMyPokePersistence();
-        try {
-            return (db?.myPokeText || localStorage.getItem(MY_POKE_STORAGE_KEY) || '').trim();
-        } catch (e) {
-            return (db?.myPokeText || '').trim();
-        }
+    function getMyPokeTextSafe(chat) {
+        return getCharMyPokeText(chat);
     }
 
     function formatAiPokeLine(chat, customSuffix) {
@@ -324,7 +343,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (custom) {
             return custom.startsWith(cName) ? custom : `${cName} ${custom}`;
         }
-        const myText = getMyPokeTextSafe();
+        const myText = getMyPokeTextSafe(chat);
         if (myText) {
             const converted = myText.replace(/自己/g, '你').replace(/我/g, '你');
             return `${cName} ${converted}`;
@@ -391,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 let note = origBuild.apply(this, arguments) || '';
                 if (chat && (!chat.members)) {
                     const cName = chat.remarkName || chat.realName || chat.name || '你';
-                    const myText = getMyPokeTextSafe();
+                    const myText = getMyPokeTextSafe(chat);
                     const pokePreview = myText
                         ? `${cName} ${myText.replace(/自己/g, '对方').replace(/我/g, '对方')}`
                         : `${cName} 拍了拍对方`;

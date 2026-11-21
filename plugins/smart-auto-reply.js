@@ -21,22 +21,41 @@
     const OS_NOTIFY_KEY = 'uwu_os_notify_enabled';
     const lastNotifyDedup = new Map();
 
-    function extractCleanPreview(cleanedText) {
-        if (typeof cleanedText !== 'string') return '发来了一条新消息';
+    function extractCleanPreview(cleanedText, chat) {
+        if (typeof cleanedText !== 'string') return '';
         let txt = cleanedText;
+        // 1. 剥离思考过程与各类隐藏 XML/HTML 状态栏块
+        txt = txt.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
         const thinkEnd = txt.lastIndexOf('</thinking>');
         if (thinkEnd !== -1) txt = txt.slice(thinkEnd + 11);
+        txt = txt.replace(/<(?:status|state|stat|status_bar|statusbar|panel|memory|meta)[^>]*>[\s\S]*?<\/(?:status|state|stat|status_bar|statusbar|panel|memory|meta)>/gi, '');
+
+        // 2. 剥离所有聊天界面不显示的隐藏/状态栏/系统指令标签
         txt = txt
             .replace(/\[NEXT_PING:[^\]]+\]/gi, '')
             .replace(/\[SET_POKE:[^\]]+\]/gi, '')
             .replace(/\[CHANGE_AVATAR:[^\]]+\]/gi, '')
             .replace(/\[POKE_USER(?::[^\]]*)?\]/gi, '')
+            .replace(/\[system(?:-display)?:[^\]]*\]/gi, '')
+            .replace(/\[[^\]]*?(?:更新状态为|更新状态|状态栏|当前状态)[：:][^\]]*\]/gi, '')
+            .replace(/\[[^\]]*?(?:接收|退回)[^\]]*?的转账\]/g, '')
+            .replace(/\[[^\]]*?已接收礼物\]/g, '')
+            .replace(/\[[^\]]*?邀请[^\]]*?加入了群聊\]/g, '')
+            .replace(/\[[^\]]*?修改群名为[：:][^\]]*\]/g, '');
+
+        // 3. 把剩余真正会在聊天界面显示的可见消息提取出来（普通消息/语音/照片/表情/转账/礼物/拍一拍）
+        txt = txt
             .replace(/\[系统动作[：:]([^\]]+)\]/g, '$1')
             .replace(/\[[^\]]*?(?:的消息|回复)[：:]/g, '')
+            .replace(/\[[^\]]*?的语音[：:]([^\]]+)\]/g, '[语音] $1')
+            .replace(/\[[^\]]*?发来的照片\/视频[：:][^\]]*\]/g, '[照片/视频]')
+            .replace(/\[[^\]]*?(?:的表情包|发送的表情包)[：:][^\]]*\]/g, '[表情包]')
             .replace(/\]/g, '')
             .replace(/\s+/g, ' ')
             .trim();
-        if (!txt) return '发来了一条新消息';
+
+        // 若过滤完隐藏/状态栏信息后没有任何可见聊天内容，则不弹出通知
+        if (!txt) return '';
         return txt.length > 60 ? txt.slice(0, 60) + '…' : txt;
     }
 
@@ -239,7 +258,10 @@
             }
             const res = await origHandle.call(this, cleaned, chat, targetChatId, targetChatType, isBackground);
             if (chat) {
-                showSystemNotification(chat, extractCleanPreview(cleaned)).catch(() => {});
+                const preview = extractCleanPreview(cleaned, chat);
+                if (preview) {
+                    showSystemNotification(chat, preview).catch(() => {});
+                }
             }
             return res;
         };

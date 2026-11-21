@@ -154,6 +154,17 @@ function createMessageBubbleElement(message, isContinuous = false) {
     // 拦截：如果是状态更新或思考过程，且没开调试模式，直接不渲染
     if ((isStatusUpdate || isThinking) && !isDebugMode) return null;
 
+    // 拍一拍消息：渲染为微信风格居中灰色小字（同时自动兼容修复旧版拍一拍记录）
+    const pokeSysMatch = (typeof content === 'string') ? content.trim().match(/^\[(?:系统动作|system-display)[：:]([\s\S]+?)\]$/) : null;
+    if (message.isPoke || (pokeSysMatch && (String(id || '').startsWith('msg_poke_') || pokeSysMatch[1].includes('拍了拍')))) {
+        const pokeText = (message.pokeDisplay || (pokeSysMatch ? pokeSysMatch[1] : content) || '').trim();
+        const wrapper = document.createElement('div');
+        wrapper.dataset.id = id;
+        wrapper.className = 'message-wrapper system-notification uwu-poke-notice';
+        wrapper.innerHTML = `<div class="system-notification-bubble uwu-poke-bubble">${DOMPurify.sanitize(pokeText)}</div>`;
+        return wrapper;
+    }
+
     // ... 后续代码不变 ...
 
 
@@ -964,7 +975,7 @@ const contentMatch = content.match(/^\[.*?(?:消息|回复)[：:]([\s\S]+)\]$/);
             bubbleElement.style.backgroundColor = bubbleTheme.bg;
             bubbleElement.style.color = bubbleTheme.text;
         }
-    } else if (message && Array.isArray(message.parts) && message.parts[0].type === 'html') {
+    } else if (message && Array.isArray(message.parts) && message.parts[0] && message.parts[0].type === 'html') {
         bubbleElement = document.createElement('div');
         bubbleElement.className = `message-bubble ${isSent ? 'sent' : 'received'} html-bubble`;
         const htmlContent = message.parts[0].text;

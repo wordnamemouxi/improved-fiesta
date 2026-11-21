@@ -238,17 +238,19 @@
         }
     }
 
-    // 1. 注入聊天室底部「麦克风」按钮
+    // 1. 注入聊天室底部左侧「麦克风」按钮（仿微信放在 + 号右侧、输入框左侧，彻底避开右侧生成/发送按钮）
     function injectMicButton() {
-        const getReplyBtn = document.getElementById('get-reply-btn');
-        if (!getReplyBtn || document.getElementById('uwu-mic-input-btn')) return;
-        const bar = getReplyBtn.parentElement;
-        if (!bar) return;
+        const expandBtn = document.getElementById('toggle-expansion-btn');
+        const inputWrap = document.querySelector('#message-input-default .input-wrapper');
+        const anchor = expandBtn || inputWrap;
+        if (!anchor || !anchor.parentElement || document.getElementById('uwu-mic-input-btn')) return;
+        const bar = anchor.parentElement;
 
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.id = 'uwu-mic-input-btn';
         btn.className = 'icon-btn circle-bg uwu-mic-btn';
+        btn.style.flexShrink = '0';
         btn.title = '语音输入';
         btn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>`;
         btn.addEventListener('click', (e) => {
@@ -256,7 +258,8 @@
             e.stopPropagation();
             toggleRecording();
         });
-        bar.insertBefore(btn, getReplyBtn);
+        if (expandBtn) bar.insertBefore(btn, expandBtn.nextSibling);
+        else bar.insertBefore(btn, inputWrap);
     }
 
     // 2. 在 API 设置页注入「真实语音输入（STT）」配置面板（全宽竖排，手机端无溢出）
@@ -286,7 +289,11 @@
                 <div id="uwu-stt-whisper-fields" style="display:flex;flex-direction:column;gap:8px;width:100%;box-sizing:border-box;">
                     <input type="text" id="uwu-stt-endpoint" placeholder="Whisper 接口地址（留空则复用主 API 域名）" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
                     <input type="password" id="uwu-stt-apikey" placeholder="Whisper API Key（留空则复用主 API Key）" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
-                    <input type="text" id="uwu-stt-model" placeholder="模型名（默认 whisper-1）" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
+                    <div style="display:flex;gap:6px;width:100%;box-sizing:border-box;">
+                        <input type="text" id="uwu-stt-model" placeholder="模型名（如 FunAudioLLM/SenseVoiceSmall）" style="flex:1;min-width:0;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
+                        <button type="button" id="uwu-stt-fetch-models-btn" style="flex-shrink:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:12px;cursor:pointer;">拉取模型</button>
+                    </div>
+                    <select id="uwu-stt-model-select" style="display:none;width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#f8fafc;font-size:13px;"></select>
                 </div>
                 <label style="display:flex;align-items:center;justify-content:space-between;font-size:13px;color:#333;padding:2px 0;">
                     <span>识别后仅填入文字框（不勾选则直接发出语音条）</span>
@@ -304,7 +311,48 @@
         const keyEl = document.getElementById('uwu-stt-apikey');
         const modelEl = document.getElementById('uwu-stt-model');
         const autoEl = document.getElementById('uwu-stt-autosend');
+        const fetchSttBtn = document.getElementById('uwu-stt-fetch-models-btn');
+        const sttModelSel = document.getElementById('uwu-stt-model-select');
         const saveBtn = document.getElementById('uwu-stt-save-btn');
+
+        sttModelSel.addEventListener('change', () => {
+            if (sttModelSel.value) modelEl.value = sttModelSel.value;
+        });
+
+        fetchSttBtn.addEventListener('click', async () => {
+            fetchSttBtn.disabled = true;
+            fetchSttBtn.textContent = '拉取中…';
+            try {
+                const rawEp = (epEl.value || '').trim() || (window.db?.apiSettings?.url || '').trim();
+                if (!rawEp) throw new Error('请先填写接口地址（如 https://api.siliconflow.cn/v1/audio/transcriptions）');
+                let modelsUrl = /\/models(\?|$)/.test(rawEp) ? rawEp
+                    : (/\/v1\//.test(rawEp) ? rawEp.replace(/\/v1\/.*$/, '/v1/models') : rawEp.replace(/\/$/, '') + '/v1/models');
+                if (modelsUrl.includes('siliconflow') && !modelsUrl.includes('?')) {
+                    modelsUrl += '?sub_type=speech-to-text';
+                }
+                const headers = {};
+                const k = (keyEl.value || window.db?.apiSettings?.key || '').trim();
+                if (k) headers['Authorization'] = `Bearer ${k}`;
+                const resp = await fetch(modelsUrl, { headers });
+                if (!resp.ok) throw new Error(`拉取模型失败 (${resp.status})`);
+                const data = await resp.json();
+                const rawList = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+                const ids = rawList.map(m => typeof m === 'string' ? m : (m?.id || m?.name || '')).filter(Boolean);
+                const asrRe = /whisper|sensevoice|asr|speech|transcrib|audio/i;
+                ids.sort((a, b) => (asrRe.test(b) ? 1 : 0) - (asrRe.test(a) ? 1 : 0));
+                const uniq = [...new Set(ids)];
+                if (!uniq.length) throw new Error('接口未返回可用模型');
+                sttModelSel.innerHTML = '<option value="">-- 请选择拉取到的语音识别模型 --</option>' + uniq.map(m => `<option value="${m.replace(/"/g, '&quot;')}">${m}</option>`).join('');
+                sttModelSel.style.display = 'block';
+                if (modelEl.value && uniq.includes(modelEl.value)) sttModelSel.value = modelEl.value;
+                if (typeof window.showToast === 'function') window.showToast(`已拉取 ${uniq.length} 个模型`);
+            } catch (err) {
+                if (typeof window.showToast === 'function') window.showToast(err.message || '拉取模型失败');
+            } finally {
+                fetchSttBtn.disabled = false;
+                fetchSttBtn.textContent = '拉取模型';
+            }
+        });
 
         modeEl.value = cfg.mode || 'browser';
         langEl.value = cfg.lang || 'zh-CN';

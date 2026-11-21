@@ -40,7 +40,7 @@
         }
     }
 
-    async function synthesizeSpeech({ provider, apiKey, groupId, endpoint, voiceId, text, speed = 1.0 }) {
+    async function synthesizeSpeech({ provider, apiKey, groupId, endpoint, model, voiceId, text, speed = 1.0 }) {
         const cleanText = (text || '').trim();
         if (!cleanText) throw new Error('语音内容为空');
         if (!apiKey && provider !== 'custom') throw new Error('请先在 API 设置中填写语音 API Key');
@@ -90,12 +90,23 @@
                 model_id: 'eleven_multilingual_v2',
                 voice_settings: { stability: 0.5, similarity_boost: 0.75 }
             };
+        } else if (provider === 'siliconflow') {
+            url = (endpoint || '').trim() || 'https://api.siliconflow.cn/v1/audio/speech';
+            headers['Authorization'] = `Bearer ${apiKey}`;
+            const sfModel = (model || '').trim() || 'FunAudioLLM/CosyVoice2-0.5B';
+            body = {
+                model: sfModel,
+                input: cleanText,
+                voice: voiceId || `${sfModel}:alex`,
+                speed: Number(speed) || 1.0,
+                response_format: 'mp3'
+            };
         } else {
             // openai 或自定义兼容 /v1/audio/speech 接口
             url = (endpoint || '').trim() || 'https://api.openai.com/v1/audio/speech';
             if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
             body = {
-                model: 'tts-1',
+                model: (model || '').trim() || 'tts-1',
                 input: cleanText,
                 voice: voiceId || 'alloy',
                 speed: Number(speed) || 1.0,
@@ -159,6 +170,7 @@
                     apiKey: (cfg.apiKey || '').trim(),
                     groupId: (cfg.groupId || '').trim(),
                     endpoint: (cfg.endpoint || '').trim(),
+                    model: (cfg.model || '').trim(),
                     voiceId,
                     text,
                     speed
@@ -207,7 +219,35 @@
         });
     }
 
-    // 2. 在 API 设置页面注入全局「专属语音合成 API」配置面板
+    // 2. 在 API 设置页面注入全局「专属语音合成 API」配置面板（支持硅基流动与拉取模型）
+    function resolveModelsUrl(rawEndpoint, provider) {
+        const ep = (rawEndpoint || '').trim();
+        if (ep) {
+            if (/\/models(\?|$)/.test(ep)) return ep;
+            if (/\/v1\//.test(ep)) return ep.replace(/\/v1\/.*$/, '/v1/models');
+            return ep.replace(/\/$/, '') + '/v1/models';
+        }
+        if (provider === 'siliconflow') return 'https://api.siliconflow.cn/v1/models?sub_type=text-to-speech';
+        if (provider === 'custom') return ((window.db?.apiSettings?.url || 'https://api.openai.com').replace(/\/$/, '').replace(/\/v1$/, '')) + '/v1/models';
+        return '';
+    }
+
+    async function fetchTtsModels(provider, endpoint, apiKey) {
+        const url = resolveModelsUrl(endpoint, provider);
+        if (!url) throw new Error('该平台使用固定音色接口，请直接在角色设置填写音色 ID，或填入自定义接口地址后拉取');
+        const headers = {};
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) throw new Error(`拉取模型失败 (${resp.status})`);
+        const data = await resp.json();
+        const rawList = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+        const ids = rawList.map(m => typeof m === 'string' ? m : (m?.id || m?.name || '')).filter(Boolean);
+        // 将语音/TTS 相关模型优先排在最前面
+        const audioRe = /tts|speech|voice|audio|cosy|fish|moss|kokoro|bark|chattts|f5/i;
+        ids.sort((a, b) => (audioRe.test(b) ? 1 : 0) - (audioRe.test(a) ? 1 : 0));
+        return [...new Set(ids)];
+    }
+
     function injectApiVoiceSettings() {
         const timeSw = document.getElementById('time-perception-switch');
         if (!timeSw || document.getElementById('api-voice-tts-section')) return;
@@ -222,14 +262,20 @@
             <div class="kkt-item" style="flex-direction:column;align-items:stretch;gap:8px;width:100%;box-sizing:border-box;overflow:hidden;">
                 <div class="kkt-item-title">专属克隆语音 API（点语音条合成）</div>
                 <select id="uwu-tts-provider" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:13px;">
+                    <option value="siliconflow">硅基流动 (SiliconFlow)</option>
                     <option value="fish">Fish Audio</option>
                     <option value="minimax">MiniMax (T2A v2)</option>
                     <option value="elevenlabs">ElevenLabs</option>
                     <option value="custom">OpenAI / 自建兼容接口</option>
                 </select>
-                <input type="text" id="uwu-tts-groupid" placeholder="MiniMax GroupId（选填）" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
+                <input type="text" id="uwu-tts-groupid" placeholder="MiniMax GroupId（仅 MiniMax 选填）" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
                 <input type="password" id="uwu-tts-apikey" placeholder="语音 API Key" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
                 <input type="text" id="uwu-tts-endpoint" placeholder="自定义接口 / 跨域反代地址（留空用官方默认）" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
+                <div style="display:flex;gap:6px;width:100%;box-sizing:border-box;">
+                    <input type="text" id="uwu-tts-model" placeholder="语音合成模型名（如 FunAudioLLM/CosyVoice2-0.5B）" style="flex:1;min-width:0;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
+                    <button type="button" id="uwu-tts-fetch-models-btn" style="flex-shrink:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:12px;cursor:pointer;">拉取模型</button>
+                </div>
+                <select id="uwu-tts-model-select" style="display:none;width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#f8fafc;font-size:13px;"></select>
                 <button type="button" id="uwu-tts-save-api-btn" class="btn btn-primary" style="width:100%;box-sizing:border-box;padding:8px 12px;font-size:13px;">保存语音 API 设置</button>
             </div>
         `;
@@ -239,19 +285,52 @@
         const keyEl = document.getElementById('uwu-tts-apikey');
         const gidEl = document.getElementById('uwu-tts-groupid');
         const epEl = document.getElementById('uwu-tts-endpoint');
+        const modelEl = document.getElementById('uwu-tts-model');
+        const fetchBtn = document.getElementById('uwu-tts-fetch-models-btn');
+        const modelSel = document.getElementById('uwu-tts-model-select');
         const saveBtn = document.getElementById('uwu-tts-save-api-btn');
 
-        provEl.value = cfg.provider || 'fish';
+        provEl.value = cfg.provider || 'siliconflow';
         keyEl.value = cfg.apiKey || '';
         gidEl.value = cfg.groupId || '';
         epEl.value = cfg.endpoint || '';
+        modelEl.value = cfg.model || '';
+
+        const syncProviderUi = () => {
+            gidEl.style.display = provEl.value === 'minimax' ? 'block' : 'none';
+        };
+        provEl.addEventListener('change', syncProviderUi);
+        syncProviderUi();
+
+        modelSel.addEventListener('change', () => {
+            if (modelSel.value) modelEl.value = modelSel.value;
+        });
+
+        fetchBtn.addEventListener('click', async () => {
+            fetchBtn.disabled = true;
+            fetchBtn.textContent = '拉取中…';
+            try {
+                const list = await fetchTtsModels(provEl.value, epEl.value, keyEl.value.trim());
+                if (!list.length) throw new Error('接口未返回任何可用模型');
+                modelSel.innerHTML = '<option value="">-- 请选择拉取到的语音模型 --</option>' + list.map(m => `<option value="${m.replace(/"/g, '&quot;')}">${m}</option>`).join('');
+                modelSel.style.display = 'block';
+                if (modelEl.value && list.includes(modelEl.value)) modelSel.value = modelEl.value;
+                if (typeof window.showToast === 'function') window.showToast(`已拉取 ${list.length} 个模型`);
+            } catch (err) {
+                if (typeof window.showToast === 'function') window.showToast(err.message || '拉取模型失败');
+            } finally {
+                fetchBtn.disabled = false;
+                fetchBtn.textContent = '拉取模型';
+            }
+        });
 
         saveBtn.addEventListener('click', () => {
             saveConfig({
                 provider: provEl.value,
                 apiKey: keyEl.value.trim(),
                 groupId: gidEl.value.trim(),
-                endpoint: epEl.value.trim()
+                endpoint: epEl.value.trim(),
+                model: modelEl.value.trim()
             });
             if (typeof window.showToast === 'function') window.showToast('语音 API 设置已保存');
         });
@@ -302,6 +381,7 @@
                 <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;width:100%;box-sizing:border-box;">
                     <select id="setting-voice-tts-provider" style="width:100%;box-sizing:border-box;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #d0d7de;background:#fff;font-size:12px;">
                         <option value="">跟随全局 API</option>
+                        <option value="siliconflow">硅基流动</option>
                         <option value="fish">Fish Audio</option>
                         <option value="minimax">MiniMax</option>
                         <option value="elevenlabs">ElevenLabs</option>
@@ -427,6 +507,7 @@
                     apiKey: (cfg.apiKey || '').trim(),
                     groupId: (cfg.groupId || '').trim(),
                     endpoint: (cfg.endpoint || '').trim(),
+                    model: (cfg.model || '').trim(),
                     voiceId,
                     text: cleanSpoken,
                     speed

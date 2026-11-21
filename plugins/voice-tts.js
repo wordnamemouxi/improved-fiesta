@@ -219,22 +219,18 @@
         box.className = 'kkt-group';
         box.id = 'api-voice-tts-section';
         box.innerHTML = `
-            <div class="kkt-item" style="flex-direction:column;align-items:stretch;gap:8px;">
-                <div style="display:flex;align-items:center;justify-content:space-between;">
-                    <div class="kkt-item-title">专属克隆语音 API（点语音条合成）</div>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <select id="uwu-tts-provider" style="padding:6px 8px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:13px;">
-                        <option value="fish">Fish Audio</option>
-                        <option value="minimax">MiniMax (T2A v2)</option>
-                        <option value="elevenlabs">ElevenLabs</option>
-                        <option value="custom">OpenAI / 自建兼容接口</option>
-                    </select>
-                    <input type="text" id="uwu-tts-groupid" placeholder="MiniMax GroupId（选填）" style="padding:6px 8px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
-                </div>
-                <input type="password" id="uwu-tts-apikey" placeholder="语音 API Key" style="padding:6px 8px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
-                <input type="text" id="uwu-tts-endpoint" placeholder="自定义接口 / 跨域反代地址（留空用官方默认）" style="padding:6px 8px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
-                <button type="button" id="uwu-tts-save-api-btn" class="btn btn-primary" style="padding:6px 12px;font-size:13px;">保存语音 API 设置</button>
+            <div class="kkt-item" style="flex-direction:column;align-items:stretch;gap:8px;width:100%;box-sizing:border-box;overflow:hidden;">
+                <div class="kkt-item-title">专属克隆语音 API（点语音条合成）</div>
+                <select id="uwu-tts-provider" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:13px;">
+                    <option value="fish">Fish Audio</option>
+                    <option value="minimax">MiniMax (T2A v2)</option>
+                    <option value="elevenlabs">ElevenLabs</option>
+                    <option value="custom">OpenAI / 自建兼容接口</option>
+                </select>
+                <input type="text" id="uwu-tts-groupid" placeholder="MiniMax GroupId（选填）" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
+                <input type="password" id="uwu-tts-apikey" placeholder="语音 API Key" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
+                <input type="text" id="uwu-tts-endpoint" placeholder="自定义接口 / 跨域反代地址（留空用官方默认）" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;font-size:13px;">
+                <button type="button" id="uwu-tts-save-api-btn" class="btn btn-primary" style="width:100%;box-sizing:border-box;padding:8px 12px;font-size:13px;">保存语音 API 设置</button>
             </div>
         `;
         group.parentElement.insertBefore(box, group.nextSibling);
@@ -303,16 +299,18 @@
             <div class="feature-card-body">
                 <div class="feature-card-title">专属克隆音色（点语音条合成）</div>
                 <div class="feature-card-desc">开启后点击角色语音条才实时合成播放，同条自动缓存不重复扣费</div>
-                <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
-                    <select id="setting-voice-tts-provider" style="padding:4px 6px;border-radius:6px;border:1px solid #d0d7de;background:#fff;font-size:12px;">
+                <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;width:100%;box-sizing:border-box;">
+                    <select id="setting-voice-tts-provider" style="width:100%;box-sizing:border-box;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #d0d7de;background:#fff;font-size:12px;">
                         <option value="">跟随全局 API</option>
                         <option value="fish">Fish Audio</option>
                         <option value="minimax">MiniMax</option>
                         <option value="elevenlabs">ElevenLabs</option>
                         <option value="custom">OpenAI/自建</option>
                     </select>
-                    <input type="text" id="setting-voice-tts-id" placeholder="填该角色的音色 ID / Reference ID" style="flex:1;min-width:140px;padding:4px 8px;border-radius:6px;border:1px solid #d0d7de;font-size:12px;">
-                    <button type="button" id="setting-voice-tts-test" style="padding:4px 10px;border-radius:6px;border:1px solid #d0d7de;background:#fff;font-size:12px;cursor:pointer;">试听</button>
+                    <div style="display:flex;gap:6px;width:100%;box-sizing:border-box;">
+                        <input type="text" id="setting-voice-tts-id" placeholder="填该角色的音色 ID / Reference ID" style="flex:1;min-width:0;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #d0d7de;font-size:12px;">
+                        <button type="button" id="setting-voice-tts-test" style="flex-shrink:0;padding:6px 12px;border-radius:6px;border:1px solid #d0d7de;background:#fff;font-size:12px;cursor:pointer;">试听</button>
+                    </div>
                 </div>
             </div>
         `;

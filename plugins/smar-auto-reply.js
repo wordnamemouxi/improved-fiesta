@@ -17,6 +17,125 @@
     const MAX_MINUTES = 2880; // 最多 48 小时
     const pendingReasonMap = new Map();
 
+    // === 手机系统级消息弹窗通知（Edge PWA 后台/切屏时触发，支持角色备注、头像与点击直达） ===
+    const OS_NOTIFY_KEY = 'uwu_os_notify_enabled';
+    const lastNotifyDedup = new Map();
+
+    function extractCleanPreview(cleanedText) {
+        if (typeof cleanedText !== 'string') return '发来了一条新消息';
+        let txt = cleanedText;
+        const thinkEnd = txt.lastIndexOf('</thinking>');
+        if (thinkEnd !== -1) txt = txt.slice(thinkEnd + 11);
+        txt = txt
+            .replace(/\[NEXT_PING:[^\]]+\]/gi, '')
+            .replace(/\[SET_POKE:[^\]]+\]/gi, '')
+            .replace(/\[CHANGE_AVATAR:[^\]]+\]/gi, '')
+            .replace(/\[POKE_USER(?::[^\]]*)?\]/gi, '')
+            .replace(/\[系统动作[：:]([^\]]+)\]/g, '$1')
+            .replace(/\[[^\]]*?(?:的消息|回复)[：:]/g, '')
+            .replace(/\]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (!txt) return '发来了一条新消息';
+        return txt.length > 60 ? txt.slice(0, 60) + '…' : txt;
+    }
+
+    async function showSystemNotification(chat, previewText) {
+        if (!chat) return;
+        const dedupKey = `${chat.id}:${previewText || ''}`;
+        const prevTs = lastNotifyDedup.get(dedupKey) || 0;
+        if (Date.now() - prevTs < 3000) return;
+        lastNotifyDedup.set(dedupKey, Date.now());
+        const title = chat.remarkName || chat.realName || chat.name || '新消息';
+        const body = previewText || '发来了一条新消息';
+        const avatar = (typeof chat.avatar === 'string' && chat.avatar.trim()) ? chat.avatar.trim() : './icon-192.png';
+
+        const inSameChatForeground = (
+            document.visibilityState === 'visible' &&
+            typeof currentChatId !== 'undefined' &&
+            currentChatId === chat.id &&
+            document.getElementById('chat-room-screen')?.classList.contains('active')
+        );
+        if (inSameChatForeground) return;
+
+        // App 在前台但处于其他页面/其他聊天室时，先弹内建微信风顶部横幅
+        if (document.visibilityState === 'visible' && typeof window.showToast === 'function') {
+            try {
+                window.showToast({ name: title, avatar, message: body });
+            } catch (e) {}
+        }
+
+        // 若已授权系统通知，则通过 Service Worker / Notification API 弹出手机系统通知
+        try {
+            if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+            if (localStorage.getItem(OS_NOTIFY_KEY) === '0') return;
+            // 超长 base64 头像部分手机系统会拒绝通知，做长度保护
+            const safeIcon = (avatar.startsWith('data:') && avatar.length > 180000) ? './icon-192.png' : avatar;
+            const opts = {
+                body,
+                icon: safeIcon,
+                badge: './icon-192.png',
+                tag: `uwu-msg-${chat.id}`,
+                renotify: true,
+                data: { chatId: chat.id }
+            };
+            if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                const reg = await navigator.serviceWorker.ready;
+                if (reg && typeof reg.showNotification === 'function') {
+                    await reg.showNotification(title, opts);
+                    return;
+                }
+            }
+            const n = new Notification(title, opts);
+            n.onclick = () => {
+                window.focus();
+                if (typeof window.openChatRoom === 'function') window.openChatRoom(chat.id, 'private');
+                n.close();
+            };
+        } catch (e) {
+            console.warn('[SmartAutoReply] System notification error:', e);
+        }
+    }
+
+    async function requestAndTestNotification(statusCallback) {
+        if (typeof Notification === 'undefined') {
+            if (typeof window.showToast === 'function') window.showToast('当前浏览器不支持系统通知');
+            return false;
+        }
+        let perm = Notification.permission;
+        if (perm === 'default') {
+            perm = await Notification.requestPermission();
+        }
+        if (perm === 'granted') {
+            localStorage.setItem(OS_NOTIFY_KEY, '1');
+            if (typeof statusCallback === 'function') statusCallback();
+            const ch = (typeof currentChatId !== 'undefined' && window.db?.characters)
+                ? window.db.characters.find(c => c.id === currentChatId)
+                : null;
+            const testTitle = ch ? (ch.remarkName || ch.realName || '某昔专线') : '某昔专线';
+            const testIcon = (ch?.avatar && (!ch.avatar.startsWith('data:') || ch.avatar.length <= 180000)) ? ch.avatar : './icon-192.png';
+            try {
+                if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                    const reg = await navigator.serviceWorker.ready;
+                    await reg.showNotification(testTitle, {
+                        body: '系统弹窗通知已开启（锁屏隐私请在手机系统设置→通知里开启隐藏详情）',
+                        icon: testIcon,
+                        badge: './icon-192.png',
+                        tag: 'uwu-test-notify'
+                    });
+                } else {
+                    new Notification(testTitle, { body: '系统弹窗通知已开启', icon: testIcon });
+                }
+            } catch (e) {}
+            if (typeof window.showToast === 'function') window.showToast('已开启手机系统弹窗通知');
+            return true;
+        } else {
+            if (typeof window.showToast === 'function') window.showToast('通知权限被拒绝，请在浏览器设置中允许通知');
+            return false;
+        }
+    }
+
+
     function getLastUserTimestamp(char) {
         const hist = Array.isArray(char?.history) ? char.history : [];
         for (let i = hist.length - 1; i >= 0; i--) {
@@ -88,7 +207,11 @@
                     }
                 }
             }
-            return origHandle.call(this, cleaned, chat, targetChatId, targetChatType, isBackground);
+            const res = await origHandle.call(this, cleaned, chat, targetChatId, targetChatType, isBackground);
+            if (isBackground && targetChatType === 'private' && chat) {
+                showSystemNotification(chat, extractCleanPreview(cleaned)).catch(() => {});
+            }
+            return res;
         };
         wrapped.__smartWrapped = true;
         window.handleAiReplyContent = wrapped;
@@ -173,6 +296,7 @@
         const wrapped = function () {
             const ret = origInject.apply(this, arguments);
             injectSmartSettingsUI();
+        injectApiNotifySwitch();
             return ret;
         };
         wrapped.__smartWrapped = true;
@@ -180,6 +304,27 @@
     }
 
     function syncUiFromChar() {
+        const notifyBtn = document.getElementById('uwu-os-notify-btn');
+        const refreshNotifyBtn = () => {
+            if (!notifyBtn) return;
+            if (typeof Notification === 'undefined') {
+                notifyBtn.textContent = '浏览器不支持系统弹窗';
+                notifyBtn.disabled = true;
+            } else if (Notification.permission === 'granted' && localStorage.getItem(OS_NOTIFY_KEY) !== '0') {
+                notifyBtn.textContent = '系统弹窗已开启（点此测试）';
+            } else if (Notification.permission === 'denied') {
+                notifyBtn.textContent = '通知已被拦截（需去浏览器开启）';
+            } else {
+                notifyBtn.textContent = '开启手机弹窗通知';
+            }
+        };
+        if (notifyBtn) {
+            notifyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                requestAndTestNotification(refreshNotifyBtn);
+            });
+            refreshNotifyBtn();
+        }
         const swInput = document.getElementById('setting-smart-auto-reply-enabled');
         const statusLine = document.getElementById('smart-auto-reply-status');
         if (!swInput || !statusLine) return;
@@ -245,6 +390,7 @@
                 <div class="feature-card-body">
                     <div class="feature-card-title">智慧主动消息</div>
                     <div class="feature-card-desc" id="smart-auto-reply-status">关闭 · 仅用原版固定间隔</div>
+                    <button type="button" id="uwu-os-notify-btn" style="margin-top:6px;font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid #d0d7de;background:#fff;cursor:pointer;color:#333;">开启手机弹窗通知</button>
                 </div>
             `;
         } else {
@@ -304,6 +450,78 @@
         hookInjectChatSettingsHtml();
     }
 
+
+    // 7. 在 API 设置页面注入「手机系统弹窗通知」全局开关（直接放在时间感知加强下方）
+    function injectApiNotifySwitch() {
+        const timeSw = document.getElementById('time-perception-switch');
+        if (!timeSw || document.getElementById('api-os-notify-switch')) return;
+        const timeItem = timeSw.closest('.kkt-item');
+        if (!timeItem || !timeItem.parentElement) return;
+
+        const item = document.createElement('div');
+        item.className = 'kkt-item';
+        item.id = 'api-os-notify-setting-row';
+        item.innerHTML = `
+            <div class="kkt-item-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+            </div>
+            <div class="kkt-item-content">
+                <div class="kkt-item-title">手机系统弹窗通知</div>
+                <div class="kkt-item-subtitle" id="api-os-notify-subtitle">后台收到自动消息时在网页外弹窗（含备注与头像）</div>
+            </div>
+            <div class="kkt-item-control">
+                <label class="kkt-switch">
+                    <input type="checkbox" id="api-os-notify-switch">
+                    <span class="kkt-slider"></span>
+                </label>
+            </div>
+        `;
+        timeItem.parentElement.insertBefore(item, timeItem.nextSibling);
+
+        const sw = document.getElementById('api-os-notify-switch');
+        const sub = document.getElementById('api-os-notify-subtitle');
+        const syncApiSw = () => {
+            if (typeof Notification === 'undefined') {
+                sw.checked = false;
+                sw.disabled = true;
+                sub.textContent = '当前浏览器不支持系统级通知';
+                return;
+            }
+            const perm = Notification.permission;
+            const enabled = localStorage.getItem(OS_NOTIFY_KEY) === '1';
+            sw.checked = (perm === 'granted' && enabled);
+            if (perm === 'denied') {
+                sub.textContent = '通知权限已被拦截，请在浏览器站点设置中允许通知';
+            } else if (sw.checked) {
+                sub.textContent = '已开启 · 后台收到自动消息时将弹出系统通知';
+            } else {
+                sub.textContent = '开启后，切出网页或后台挂起时将收到系统弹窗通知';
+            }
+        };
+
+        sw.addEventListener('change', async () => {
+            if (sw.checked) {
+                const ok = await requestAndTestNotification(syncApiSw);
+                if (!ok) {
+                    localStorage.setItem(OS_NOTIFY_KEY, '0');
+                }
+            } else {
+                localStorage.setItem(OS_NOTIFY_KEY, '0');
+                if (typeof window.showToast === 'function') window.showToast('已关闭手机系统弹窗通知');
+            }
+            syncApiSw();
+        });
+
+        const apiScreen = document.getElementById('api-settings-screen');
+        if (apiScreen && !apiScreen.__osNotifyObserved) {
+            apiScreen.__osNotifyObserved = true;
+            new MutationObserver(() => {
+                if (apiScreen.classList.contains('active')) syncApiSw();
+            }).observe(apiScreen, { attributes: true, attributeFilter: ['class'] });
+        }
+        syncApiSw();
+    }
+
     function bootstrap() {
         hookCoreFunctions();
         observeSettingsScreen();
@@ -330,6 +548,25 @@
         bootstrap();
     }
 
+    // 点击系统通知后自动跳回对应角色聊天室
+    if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+        navigator.serviceWorker.addEventListener('message', event => {
+            const d = event.data;
+            if (d && d.type === 'uwu-open-chat' && d.chatId && typeof window.openChatRoom === 'function') {
+                window.openChatRoom(d.chatId, 'private');
+            }
+        });
+    }
+    try {
+        const qp = new URLSearchParams(location.search);
+        const openId = qp.get('openChat');
+        if (openId) {
+            setTimeout(() => {
+                if (typeof window.openChatRoom === 'function') window.openChatRoom(openId, 'private');
+            }, 900);
+        }
+    } catch (e) {}
+
     // 导出供外部测试与调试
-    window.SmartAutoReplyPlugin = { clearSmartSchedule, getLastUserTimestamp, bootstrap, syncUiFromChar };
+    window.SmartAutoReplyPlugin = { clearSmartSchedule, getLastUserTimestamp, bootstrap, syncUiFromChar, showSystemNotification, extractCleanPreview };
 })();

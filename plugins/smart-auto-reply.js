@@ -553,6 +553,7 @@
         hookCoreFunctions();
         observeSettingsScreen();
         injectSmartSettingsUI();
+        injectApiNotifySwitch();
     }
 
     // 立即同步挂载核心函数钩子（确保早于 DOMContentLoaded 里的 init() 与事件绑定！）

@@ -1,3 +1,32 @@
+// === 持久化同步：确保自定义“我的拍一拍文案”刷新后永不丢失 ===
+const MY_POKE_STORAGE_KEY = 'uwu_my_poke_text';
+function syncMyPokePersistence() {
+    try {
+        if (typeof globalSettingKeys !== 'undefined' && Array.isArray(globalSettingKeys) && !globalSettingKeys.includes('myPokeText')) {
+            globalSettingKeys.push('myPokeText');
+        }
+        const saved = localStorage.getItem(MY_POKE_STORAGE_KEY);
+        if (typeof db !== 'undefined' && db) {
+            if (typeof db.myPokeText === 'string' && db.myPokeText.trim()) {
+                localStorage.setItem(MY_POKE_STORAGE_KEY, db.myPokeText.trim());
+            } else if (saved && !db.myPokeText) {
+                db.myPokeText = saved;
+            }
+        }
+    } catch (e) {}
+}
+syncMyPokePersistence();
+if (typeof window.loadData === 'function' && !window.loadData.__myPokeWrapped) {
+    const origLoadData = window.loadData;
+    const wrappedLoadData = async function () {
+        const ret = await origLoadData.apply(this, arguments);
+        syncMyPokePersistence();
+        return ret;
+    };
+    wrappedLoadData.__myPokeWrapped = true;
+    window.loadData = wrappedLoadData;
+}
+
 // === Plugin: Avatar Library, AI Self-Change Avatar & Double-Tap Poke ===
 // === 角色头像库管理、AI 自主换头像与双击头像拍一拍模块 ===
 async function applyAiAvatarChange(chat, ref, desc) {
@@ -48,11 +77,12 @@ async function applyAiAvatarChange(chat, ref, desc) {
     }
     const cName = chat.remarkName || chat.realName || chat.name || '对方';
     chat.history ||= [];
+    const avNotice = `[system-display:${cName} 更换了头像${finalDesc ? `（${finalDesc}）` : ''}]`;
     chat.history.push({
         id: `msg_avatar_${Date.now()}`,
         role: 'system',
-        content: `[system-display:${cName} 更换了头像${finalDesc ? `（${finalDesc}）` : ''}]`,
-        parts: [],
+        content: avNotice,
+        parts: [{ type: 'text', text: avNotice }],
         timestamp: Date.now()
     });
     if (typeof saveData === 'function') await saveData();
@@ -113,7 +143,10 @@ function openAvatarPokeModal() {
         savePokeBtn.className = 'btn btn-primary';
         savePokeBtn.textContent = '保存拍一拍设置';
         savePokeBtn.onclick = async () => {
-            db.myPokeText = myPokeInput.value.trim();
+            const val = myPokeInput.value.trim();
+            db.myPokeText = val;
+            try { localStorage.setItem(MY_POKE_STORAGE_KEY, val); } catch (e) {}
+            syncMyPokePersistence();
             chat.pokeText = aiPokeInput.value.trim();
             if (typeof saveData === 'function') await saveData();
             if (typeof showToast === 'function') showToast('拍一拍文案已保存');
@@ -228,8 +261,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const targetMsgId = wrapper?.dataset?.id || '';
             const isSelf = wrapper?.classList.contains('sent');
             const cName = chat.remarkName || chat.realName || chat.name || '对方';
+            syncMyPokePersistence();
+            const mySavedPoke = (db.myPokeText || localStorage.getItem(MY_POKE_STORAGE_KEY) || '').trim();
             const displayLine = isSelf
-                ? `你${(db.myPokeText || '').trim() || '拍了拍自己'}`
+                ? `你${mySavedPoke || '拍了拍自己'}`
                 : `你${(chat.pokeText || '').trim() || `拍了拍 ${cName}`}`;
             const msgContent = `[系统动作：${displayLine}]`;
 
@@ -268,3 +303,151 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }, true);
 });
+
+// === AI 主动拍一拍用户 ([POKE_USER]) 钩子 ===
+(() => {
+    if (window.__uwuAiPokeHookLoaded) return;
+    window.__uwuAiPokeHookLoaded = true;
+
+    function getMyPokeTextSafe() {
+        syncMyPokePersistence();
+        try {
+            return (db?.myPokeText || localStorage.getItem(MY_POKE_STORAGE_KEY) || '').trim();
+        } catch (e) {
+            return (db?.myPokeText || '').trim();
+        }
+    }
+
+    function formatAiPokeLine(chat, customSuffix) {
+        const cName = chat?.remarkName || chat?.realName || chat?.name || '对方';
+        const custom = (customSuffix || '').trim().slice(0, 40);
+        if (custom) {
+            return custom.startsWith(cName) ? custom : `${cName} ${custom}`;
+        }
+        const myText = getMyPokeTextSafe();
+        if (myText) {
+            const converted = myText.replace(/自己/g, '你').replace(/我/g, '你');
+            return `${cName} ${converted}`;
+        }
+        return `${cName} 拍了拍你`;
+    }
+
+    function triggerUserAvatarShake() {
+        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+            try { navigator.vibrate([18, 35, 18]); } catch (e) {}
+        }
+        const sentImgs = document.querySelectorAll('.message-wrapper.sent .message-info img');
+        const target = sentImgs.length ? sentImgs[sentImgs.length - 1] : null;
+        if (target) {
+            target.classList.remove('uwu-poke-shake');
+            void target.offsetWidth;
+            target.classList.add('uwu-poke-shake');
+            setTimeout(() => target.classList.remove('uwu-poke-shake'), 520);
+        }
+    }
+
+    function splitPokeTagsCleanly(body, chat) {
+        const cName = chat?.remarkName || chat?.realName || chat?.name || '对方';
+        const lines = body.split('\n');
+        const out = [];
+        for (const line of lines) {
+            if (!/\[POKE_USER(?::[^\]]*)?\]/i.test(line)) {
+                out.push(line);
+                continue;
+            }
+            // 检测是否被包在 [角色的消息：...] 里，若是则安全拆成独立气泡与独立拍一拍系统行
+            const wrapMatch = line.match(/^\s*(\[([^\]]+?[：:])\s*)([\s\S]*)(\]\s*)$/);
+            if (wrapMatch && /消息|回复/.test(wrapMatch[2])) {
+                const prefix = wrapMatch[1];
+                const inner = wrapMatch[3];
+                const parts = inner.split(/(\[POKE_USER(?::[^\]]*)?\])/i);
+                for (const part of parts) {
+                    const m = part.match(/^\[POKE_USER(?::([^\]]*))?\]$/i);
+                    if (m) {
+                        out.push(`[系统动作：${formatAiPokeLine(chat, m[1])}]`);
+                    } else if (part.trim()) {
+                        out.push(`${prefix}${part.trim()}]`);
+                    }
+                }
+            } else {
+                const parts = line.split(/(\[POKE_USER(?::[^\]]*)?\])/i);
+                for (const part of parts) {
+                    const m = part.match(/^\[POKE_USER(?::([^\]]*))?\]$/i);
+                    if (m) {
+                        out.push(`[系统动作：${formatAiPokeLine(chat, m[1])}]`);
+                    } else if (part.trim()) {
+                        out.push(part.trim());
+                    }
+                }
+            }
+        }
+        return out.join('\n');
+    }
+
+    function hookAiPoke() {
+        if (typeof window.buildLivelyPostscript === 'function' && !window.buildLivelyPostscript.__aiPokeWrapped) {
+            const origBuild = window.buildLivelyPostscript;
+            const wrapped = function (chat, historySlice) {
+                let note = origBuild.apply(this, arguments) || '';
+                if (chat && (!chat.members)) {
+                    const cName = chat.remarkName || chat.realName || chat.name || '你';
+                    const myText = getMyPokeTextSafe();
+                    const pokePreview = myText
+                        ? `${cName} ${myText.replace(/自己/g, '对方').replace(/我/g, '对方')}`
+                        : `${cName} 拍了拍对方`;
+                    const tip = [
+                        '[拍一拍互动（类似微信 WeChat 拍一拍）]',
+                        '你拥有“拍一拍”功能：如果你想在打招呼、提醒/叫对方、安慰、庆祝、逗对方、回拍对方或顺手轻拍一下时触发，必须在回复中单独另起一行输出标签 [POKE_USER]（不能写在 [消息：...] 括号里面，也不要只在对话里口头说“我拍了你”，否则系统不会显示拍一拍）。',
+                        `【重要系统提示｜角色不可见】对方设置的系统拍一拍提示文案是「${pokePreview}」。请严格记住：这仅是系统内部提示，在没有触发拍一拍时角色完全看不到这条内容，也绝对不要主动提及或剧透它！只有在你真的输出了 [POKE_USER] 完成拍一拍之后，系统才会把这行提示作为系统动作显示出来，此时角色才算真正看到这条拍一拍文案。再次强调：未拍一拍时完全不可见！`
+                    ].join('\n');
+                    note = note ? `${note}\n${tip}` : tip;
+                }
+                return note;
+            };
+            wrapped.__aiPokeWrapped = true;
+            window.buildLivelyPostscript = wrapped;
+        }
+
+        if (typeof window.handleAiReplyContent === 'function' && !window.handleAiReplyContent.__aiPokeWrapped) {
+            const origHandle = window.handleAiReplyContent;
+            const wrapped = async function (fullResponse, chat, targetChatId, targetChatType, isBackground = false) {
+                let processed = fullResponse;
+                if (typeof processed === 'string' && targetChatType === 'private' && chat) {
+                    const thinkEnd = processed.lastIndexOf('</thinking>');
+                    const head = thinkEnd !== -1 ? processed.slice(0, thinkEnd + 11) : '';
+                    let body = thinkEnd !== -1 ? processed.slice(thinkEnd + 11) : processed;
+                    if (/\[POKE_USER(?::[^\]]*)?\]/i.test(body)) {
+                        body = splitPokeTagsCleanly(body, chat);
+                        processed = head + body;
+                    }
+                }
+                return origHandle.call(this, processed, chat, targetChatId, targetChatType, isBackground);
+            };
+            wrapped.__aiPokeWrapped = true;
+            window.handleAiReplyContent = wrapped;
+        }
+
+        if (typeof window.addMessageBubble === 'function' && !window.addMessageBubble.__aiPokeWrapped) {
+            const origAdd = window.addMessageBubble;
+            const wrapped = function (message, targetChatId, targetChatType) {
+                const ret = origAdd.apply(this, arguments);
+                if (message && message.role === 'assistant' && typeof message.content === 'string' && /^\[系统动作[：:].*拍了拍/.test(message.content.trim())) {
+                    if (typeof currentChatId !== 'undefined' && currentChatId === targetChatId) {
+                        triggerUserAvatarShake();
+                    }
+                }
+                return ret;
+            };
+            wrapped.__aiPokeWrapped = true;
+            window.addMessageBubble = wrapped;
+        }
+    }
+
+    hookAiPoke();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            syncMyPokePersistence();
+            hookAiPoke();
+        });
+    }
+})();

@@ -11,6 +11,77 @@
 
     const CFG_KEY = 'uwu_voice_tts_config';
     const audioCache = new Map(); // cacheKey -> blobUrl
+    const IDB_NAME = 'uwu_voice_tts_db';
+    const IDB_STORE = 'audio_blobs';
+    let voiceDbPromise = null;
+
+    function openVoiceDb() {
+        if (voiceDbPromise) return voiceDbPromise;
+        voiceDbPromise = new Promise((resolve, reject) => {
+            if (typeof indexedDB === 'undefined') return resolve(null);
+            try {
+                const req = indexedDB.open(IDB_NAME, 1);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(IDB_STORE)) {
+                        db.createObjectStore(IDB_STORE);
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => resolve(null);
+            } catch (e) {
+                resolve(null);
+            }
+        });
+        return voiceDbPromise;
+    }
+
+    async function getSavedAudioBlob(key) {
+        try {
+            const db = await openVoiceDb();
+            if (!db) return null;
+            return await new Promise((resolve) => {
+                const tx = db.transaction(IDB_STORE, 'readonly');
+                const req = tx.objectStore(IDB_STORE).get(key);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => resolve(null);
+            });
+        } catch (e) {
+            return null;
+        }
+    }
+
+    async function saveAudioBlob(key, blob) {
+        if (!blob) return;
+        try {
+            const db = await openVoiceDb();
+            if (!db) return;
+            await new Promise((resolve) => {
+                const tx = db.transaction(IDB_STORE, 'readwrite');
+                tx.objectStore(IDB_STORE).put(blob, key);
+                tx.oncomplete = () => resolve(true);
+                tx.onerror = () => resolve(false);
+            });
+        } catch (e) {}
+    }
+
+    async function deleteSavedAudioBlob(key) {
+        try {
+            const db = await openVoiceDb();
+            if (!db) return;
+            await new Promise((resolve) => {
+                const tx = db.transaction(IDB_STORE, 'readwrite');
+                tx.objectStore(IDB_STORE).delete(key);
+                tx.oncomplete = () => resolve(true);
+                tx.onerror = () => resolve(false);
+            });
+        } catch (e) {}
+    }
+
+    function getVoiceCacheKey(chatId, msgId, text) {
+        if (msgId) return `msg::${chatId || ''}::${msgId}`;
+        return `txt::${chatId || ''}::${(text || '').trim()}`;
+    }
     let currentAudio = null;
     let currentBubbleEl = null;
 
@@ -135,7 +206,7 @@
                 for (let i = 0; i < bytes.length; i++) {
                     bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
                 }
-                return URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
+                return new Blob([bytes], { type: 'audio/mpeg' });
             }
             const errMsg = json?.base_resp?.status_msg || json?.error?.message || json?.message || '接口未返回音频数据';
             throw new Error(errMsg);
@@ -143,29 +214,45 @@
 
         const blob = await resp.blob();
         if (!blob || blob.size < 100) throw new Error('返回的音频数据无效');
-        return URL.createObjectURL(blob);
+        return blob;
     }
 
-    async function playVoiceForBubble(bubbleEl, text, chat, msgId) {
-        if (currentBubbleEl === bubbleEl && currentAudio) {
+    async function playVoiceForBubble(bubbleEl, text, chat, msgId, { forceRegenerate = false } = {}) {
+        if (!forceRegenerate && currentBubbleEl === bubbleEl && currentAudio) {
             stopCurrentAudio();
             return;
         }
         stopCurrentAudio();
 
         const cfg = loadConfig();
-        const provider = chat?.voiceTts?.provider || cfg.provider || 'fish';
+        const provider = chat?.voiceTts?.provider || cfg.provider || 'siliconflow';
         const voiceId = (chat?.voiceTts?.voiceId || '').trim();
         const speed = chat?.voiceTts?.speed || 1.0;
-        const cacheKey = `${provider}::${voiceId}::${msgId || ''}::${text}`;
+        const cacheKey = getVoiceCacheKey(chat?.id, msgId, text);
 
         try {
             currentBubbleEl = bubbleEl;
             bubbleEl.classList.add('uwu-voice-loading');
 
+            if (forceRegenerate) {
+                const oldUrl = audioCache.get(cacheKey);
+                if (oldUrl) {
+                    try { URL.revokeObjectURL(oldUrl); } catch (e) {}
+                    audioCache.delete(cacheKey);
+                }
+                await deleteSavedAudioBlob(cacheKey);
+            }
+
             let blobUrl = audioCache.get(cacheKey);
             if (!blobUrl) {
-                blobUrl = await synthesizeSpeech({
+                const savedBlob = await getSavedAudioBlob(cacheKey);
+                if (savedBlob) {
+                    blobUrl = URL.createObjectURL(savedBlob);
+                    audioCache.set(cacheKey, blobUrl);
+                }
+            }
+            if (!blobUrl) {
+                const audioBlob = await synthesizeSpeech({
                     provider,
                     apiKey: (cfg.apiKey || '').trim(),
                     groupId: (cfg.groupId || '').trim(),
@@ -175,6 +262,8 @@
                     text,
                     speed
                 });
+                await saveAudioBlob(cacheKey, audioBlob);
+                blobUrl = URL.createObjectURL(audioBlob);
                 audioCache.set(cacheKey, blobUrl);
             }
 
@@ -502,7 +591,7 @@
             const cacheKey = `call::${provider}::${voiceId}::${cleanSpoken}`;
             let blobUrl = audioCache.get(cacheKey);
             if (!blobUrl) {
-                blobUrl = await synthesizeSpeech({
+                const callBlob = await synthesizeSpeech({
                     provider,
                     apiKey: (cfg.apiKey || '').trim(),
                     groupId: (cfg.groupId || '').trim(),
@@ -512,6 +601,7 @@
                     text: cleanSpoken,
                     speed
                 });
+                blobUrl = callBlob instanceof Blob ? URL.createObjectURL(callBlob) : callBlob;
                 audioCache.set(cacheKey, blobUrl);
             }
             const audio = new Audio(blobUrl);
@@ -548,9 +638,74 @@
         });
     }
 
+
+    // 长按角色语音条菜单注入「重新生成语音」选项（未手动重生成时永久复用本地保存的音频）
+    let activeLongPressVoiceCtx = null;
+
+    function hookVoiceLongPressMenu() {
+        if (typeof window.handleMessageLongPress === 'function' && !window.handleMessageLongPress.__uwuVoiceWrapped) {
+            const origLongPress = window.handleMessageLongPress;
+            const wrapped = function (messageWrapper, x, y) {
+                activeLongPressVoiceCtx = null;
+                try {
+                    if (
+                        messageWrapper &&
+                        !messageWrapper.classList.contains('sent') &&
+                        typeof currentChatType !== 'undefined' && currentChatType === 'private' &&
+                        typeof currentChatId !== 'undefined' && window.db?.characters
+                    ) {
+                        const bubble = messageWrapper.querySelector('.voice-bubble');
+                        const transcript = messageWrapper.querySelector('.voice-transcript');
+                        const text = (transcript?.textContent || '').trim();
+                        const chat = window.db.characters.find(c => c.id === currentChatId);
+                        if (bubble && text && chat?.voiceTts?.enabled) {
+                            activeLongPressVoiceCtx = {
+                                bubble,
+                                text,
+                                chat,
+                                msgId: messageWrapper.dataset?.id || ''
+                            };
+                        }
+                    }
+                } catch (e) {}
+                const ret = origLongPress.apply(this, arguments);
+                activeLongPressVoiceCtx = null;
+                return ret;
+            };
+            wrapped.__uwuVoiceWrapped = true;
+            window.handleMessageLongPress = wrapped;
+        }
+
+        if (typeof window.createContextMenu === 'function' && !window.createContextMenu.__uwuVoiceWrapped) {
+            const origCreateMenu = window.createContextMenu;
+            const wrappedMenu = function (menuItems, x, y) {
+                if (activeLongPressVoiceCtx && Array.isArray(menuItems)) {
+                    const ctx = activeLongPressVoiceCtx;
+                    const alreadyHas = menuItems.some(it => it && it.label === '重新生成语音');
+                    if (!alreadyHas) {
+                        menuItems = [
+                            {
+                                label: '重新生成语音',
+                                action: () => {
+                                    if (typeof window.showToast === 'function') window.showToast('正在重新生成这条语音…');
+                                    playVoiceForBubble(ctx.bubble, ctx.text, ctx.chat, ctx.msgId, { forceRegenerate: true });
+                                }
+                            },
+                            ...menuItems
+                        ];
+                    }
+                }
+                return origCreateMenu.call(this, menuItems, x, y);
+            };
+            wrappedMenu.__uwuVoiceWrapped = true;
+            window.createContextMenu = wrappedMenu;
+        }
+    }
+
     function bootstrap() {
         injectStyle();
         bindVoiceBubbleClicks();
+        hookVoiceLongPressMenu();
         hookCallReply();
         observeSettings();
         injectApiVoiceSettings();

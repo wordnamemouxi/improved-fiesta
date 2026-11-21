@@ -222,34 +222,49 @@ document.addEventListener('DOMContentLoaded', () => {
             lastTapEl = null;
             event.preventDefault();
             event.stopPropagation();
-            img.classList.remove('uwu-poke-shake');
-            void img.offsetWidth;
-            img.classList.add('uwu-poke-shake');
-
             const chat = (db.characters || []).find(c => c.id === currentChatId);
             if (!chat) return;
             const wrapper = img.closest('.message-wrapper');
+            const targetMsgId = wrapper?.dataset?.id || '';
             const isSelf = wrapper?.classList.contains('sent');
             const cName = chat.remarkName || chat.realName || chat.name || '对方';
             const displayLine = isSelf
                 ? `你${(db.myPokeText || '').trim() || '拍了拍自己'}`
                 : `你${(chat.pokeText || '').trim() || `拍了拍 ${cName}`}`;
+            const msgContent = `[系统动作：${displayLine}]`;
+
+            // 手机端触觉微震反馈（支持的设备生效）
+            if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+                try { navigator.vibrate([18, 35, 18]); } catch (e) {}
+            }
 
             chat.history ||= [];
             chat.history.push({
                 id: `msg_poke_${Date.now()}`,
-                role: isSelf ? 'system' : 'user',
-                content: isSelf ? `[system-display:${displayLine}]` : `[系统动作：${displayLine}]`,
-                parts: [],
+                role: 'user',
+                content: msgContent,
+                parts: [{ type: 'text', text: msgContent }],
+                isPoke: true,
+                pokeDisplay: displayLine,
                 timestamp: Date.now()
             });
             if (typeof saveData === 'function') await saveData();
             if (typeof renderMessages === 'function') renderMessages(false, true);
-            if (typeof showToast === 'function') showToast(displayLine);
+
+            // 重绘后再对新渲染出的对应头像施加抖动动画，确保肉眼清晰可见
+            const freshImg = targetMsgId
+                ? document.querySelector(`.message-wrapper[data-id="${targetMsgId}"] .message-info img`)
+                : null;
+            const animTarget = freshImg || img;
+            if (animTarget) {
+                animTarget.classList.remove('uwu-poke-shake');
+                void animTarget.offsetWidth;
+                animTarget.classList.add('uwu-poke-shake');
+                setTimeout(() => animTarget.classList.remove('uwu-poke-shake'), 520);
+            }
         } else {
             lastTapTime = now;
             lastTapEl = img;
         }
     }, true);
 });
-    

@@ -573,15 +573,39 @@ const memoryRepository = (() => {
     function recordRecall(characterId, hits) {
         return transaction('rw', async () => {
             const now = Date.now();
+            const hitIds = new Set(hits.map(h => h?.entry?.id).filter(Boolean));
+            const linkedBoostIds = new Set();
             for (const hit of hits) {
+                if (!hit?.entry?.id) continue;
+                const isDirect = Boolean(hit.explicit || (Number.isFinite(hit.score) && hit.score >= 0.75));
+                if (isDirect && Array.isArray(hit.entry.linkedEntryIds)) {
+                    for (const lid of hit.entry.linkedEntryIds) {
+                        if (lid && !hitIds.has(lid)) linkedBoostIds.add(lid);
+                    }
+                }
                 await dexieDB.memoryEntries.where('id').equals(hit.entry.id)
                     .filter(entry => entry.characterId === characterId).modify(entry => {
                         entry.recallCount = (entry.recallCount || 0) + 1;
-                        entry.lastRecalledAt = now;
-                        if (entry.kind === 'event' && !entry.pinned && !entry.permanent) {
-                            const currentStrength = Number.isFinite(entry.baseStrength) ? entry.baseStrength : 0.5;
-                            entry.baseStrength = Math.min(0.98, Number((currentStrength + 0.04).toFixed(2)));
+                        const prevRecalled = entry.lastRecalledAt || 0;
+                        // 直接强命中立刻刷新记忆时间并大幅回暖；后台顺带召回间隔超过 6 小时再刷新时间，温和巩固
+                        if (isDirect || (now - prevRecalled > 6 * 3600 * 1000)) {
+                            entry.lastRecalledAt = now;
                         }
+                        if (entry.kind !== 'code' && !entry.pinned && !entry.permanent) {
+                            const currentStrength = Number.isFinite(entry.baseStrength) ? entry.baseStrength : 0.5;
+                            const delta = isDirect ? 0.16 : 0.05;
+                            const cap = isDirect ? 0.98 : 0.95;
+                            entry.baseStrength = Math.min(cap, Number((currentStrength + delta).toFixed(2)));
+                        }
+                    });
+            }
+            // 关联记忆联动回暖：直接聊到某件事时，绑定的关联记忆也轻微浮现
+            for (const lid of linkedBoostIds) {
+                await dexieDB.memoryEntries.where('id').equals(lid)
+                    .filter(entry => entry.characterId === characterId && entry.kind !== 'code' && !entry.pinned && !entry.permanent)
+                    .modify(entry => {
+                        const currentStrength = Number.isFinite(entry.baseStrength) ? entry.baseStrength : 0.5;
+                        entry.baseStrength = Math.min(0.92, Number((currentStrength + 0.06).toFixed(2)));
                     });
             }
         });
@@ -1195,11 +1219,17 @@ const memoryEngine = (() => {
     }
 
     function clarity(entry, now = Date.now(), style = styleDefinitions.balanced) {
-        if (entry.pinned || entry.permanent || entry.kind !== 'event') return 1;
-        const anchor = entry.lastRecalledAt ?? entry.eventAt ?? entry.createdAt;
+        if (!entry) return 1;
+        if (entry.pinned || entry.permanent || entry.kind === 'code') return 1;
+        if (entry.recallClass === 'core' || entry.recallClass === 'agreement' || entry.recallClass === 'evolution') return 1;
+        const anchor = entry.lastRecalledAt ?? entry.eventAt ?? entry.createdAt ?? now;
         const age = Math.max(0, (now - anchor) / day);
-        const halfLife = (35 + entry.importance * 330) * style.lifetime;
-        return Math.min(1, entry.baseStrength * style.strength * 2 ** (-age / halfLife));
+        const imp = Math.max(0, Math.min(1, Number.isFinite(entry.importance) ? entry.importance : 0.5));
+        const recallBonus = Math.min(2.5, 1 + Math.max(0, entry.recallCount || 0) * 0.15);
+        const baseHalfLife = 12 + Math.pow(imp, 1.6) * 165;
+        const halfLife = Math.max(7, baseHalfLife * recallBonus * (style?.lifetime || 1));
+        const baseStr = Number.isFinite(entry.baseStrength) ? entry.baseStrength : 0.7;
+        return Math.min(1, baseStr * (style?.strength || 1) * 2 ** (-age / halfLife));
     }
 
     function clarityLabel(value) {
@@ -1465,6 +1495,12 @@ const memoryViews = (() => {
         const style = memoryEngine.styleFor(character);
         const container = element('div');
         const fmtDate = new Intl.DateTimeFormat(document.documentElement.lang || 'zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
+        const fmtDateTime = ts => {
+            const d = new Date(ts);
+            const datePart = fmtDate.format(d);
+            if (d.getHours() === 0 && d.getMinutes() === 0) return datePart;
+            return `${datePart} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        };
         const fmtMonth = ts => {
             const d = new Date(ts);
             return `${d.getFullYear()}年${d.getMonth() + 1}月`;
@@ -1500,7 +1536,7 @@ const memoryViews = (() => {
                 const point = element('li', undefined, { className: onSelect ? 'is-clickable' : '' });
                 const cLbl = memoryEngine.clarityLabel(memoryEngine.clarity(entry, Date.now(), style));
                 const badges = element('div', undefined, { className: 'uwu-memory-badges' });
-                badges.append(element('span', entry.eventAt !== null ? fmtDate.format(entry.eventAt) : '未填日期', { className: 'uwu-badge uwu-badge-date' }));
+                badges.append(element('span', entry.eventAt !== null ? fmtDateTime(entry.eventAt) : '未填日期', { className: 'uwu-badge uwu-badge-date' }));
                 badges.append(element('span', cLbl, { className: `uwu-badge ${clarityCls[cLbl] || 'uwu-badge-fuzzy'}` }));
                 if (classLabel[entry.recallClass]) {
                     badges.append(element('span', classLabel[entry.recallClass][0], { className: `uwu-badge ${classLabel[entry.recallClass][1]}` }));
@@ -1922,6 +1958,13 @@ const memoryManagement = (() => {
             const value = existing?.[key] ?? defaultValue;
             if (type === 'checkbox') control.checked = value;
             else if (type === 'date') control.value = value ? new Date(value).toISOString().slice(0, 10) : '';
+            else if (type === 'datetime-local') {
+                if (typeof value === 'string') control.value = value;
+                else if (value) {
+                    const d = new Date(value);
+                    control.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                } else control.value = '';
+            }
             else if (Array.isArray(value)) control.value = value.join('，');
             else if (type !== 'file') control.value = value;
             controls[key] = control;
@@ -1971,11 +2014,11 @@ const memoryManagement = (() => {
             input('summary', '简短摘要', 'textarea');
             input('details', '细节', 'textarea');
             input('enabled', '允许检索与整理引用', 'checkbox', true);
-            const todayLocal = (() => {
+            const nowLocal = (() => {
                 const d = new Date();
-                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
             })();
-            input('eventAt', '事件日期', 'date', existing ? '' : todayLocal);
+            input('eventAt', '事件时间（精确到小时分钟）', 'datetime-local', existing ? '' : nowLocal);
             const importance = input('importance', '重要程度（0–1）', 'number', 0.5);
             Object.assign(importance, { step: '0.05', min: '0', max: '1', required: true });
             const curClarity = existing && kind === 'event'
@@ -2232,7 +2275,13 @@ const memoryManagement = (() => {
                         else if (entry.recallClass === 'evolution') badges.append(element('span', '成长变化', { className: 'uwu-badge uwu-badge-evolution' }));
                         else if (entry.recallClass === 'core') badges.append(element('span', '核心设定', { className: 'uwu-badge uwu-badge-core' }));
                         else badges.append(element('span', typeNames[entry.kind], { className: 'uwu-badge uwu-badge-date' }));
-                        if (entry.eventAt) badges.append(element('span', new Date(entry.eventAt).toLocaleDateString(), { className: 'uwu-badge uwu-badge-date' }));
+                        if (entry.eventAt) {
+                            const _d = new Date(entry.eventAt);
+                            const _ds = (_d.getHours() === 0 && _d.getMinutes() === 0)
+                                ? _d.toLocaleDateString()
+                                : `${_d.toLocaleDateString()} ${String(_d.getHours()).padStart(2, '0')}:${String(_d.getMinutes()).padStart(2, '0')}`;
+                            badges.append(element('span', _ds, { className: 'uwu-badge uwu-badge-date' }));
+                        }
                         badges.append(element('span', `重要度 ${entry.importance}`, { className: 'uwu-badge uwu-badge-date' }));
                         if (!entry.enabled) badges.append(element('span', '已停用', { className: 'uwu-badge uwu-badge-fuzzy' }));
                     }
@@ -2962,9 +3011,16 @@ const memoryPrompt = (() => {
                 report(hit, '条数上限');
                 continue;
             }
-            const evoDate = entry.recallClass === 'evolution' && entry.eventAt
-                ? ` ${new Date(entry.eventAt).toLocaleDateString()}` : '';
-            const type = (classification ? classification + evoDate : '') || (entry.kind === 'fact' ? '事实' : memoryEngine.clarityLabel(hit.clarity));
+            const fmtPromptTime = ts => {
+                if (!ts) return '';
+                const d = new Date(ts);
+                const base = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                return (d.getHours() === 0 && d.getMinutes() === 0)
+                    ? base
+                    : `${base} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            };
+            const timeStampTag = entry.eventAt ? ` ${fmtPromptTime(entry.eventAt)}` : '';
+            const type = (classification ? classification + (entry.recallClass === 'evolution' ? timeStampTag : '') : '') || ((entry.kind === 'fact' ? '事实' : memoryEngine.clarityLabel(hit.clarity)) + (entry.kind === 'event' ? timeStampTag : ''));
             const title = cleanField(entry.title);
             const prefix = `- [${type}] ${title}：`;
             const summary = cleanField(entry.summary);

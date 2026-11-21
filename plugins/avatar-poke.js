@@ -1,0 +1,255 @@
+// === Plugin: Avatar Library, AI Self-Change Avatar & Double-Tap Poke ===
+// === 角色头像库管理、AI 自主换头像与双击头像拍一拍模块 ===
+async function applyAiAvatarChange(chat, ref, desc) {
+    if (!chat) return;
+    chat.avatarLibrary ||= [];
+    let newUrl = '';
+    let finalDesc = desc || '';
+    if (ref.startsWith('lib:')) {
+        const lid = ref.slice(4).trim();
+        const found = chat.avatarLibrary.find(item => item.id === lid);
+        if (found?.url) {
+            newUrl = found.url;
+            finalDesc = finalDesc || found.desc || '头像库头像';
+        }
+    } else if (ref.startsWith('img:')) {
+        const idx = Number.parseInt(ref.slice(4).trim(), 10) - 1;
+        const recentUserMsgs = (chat.history || []).filter(m => m && m.role === 'user').slice(-6);
+        const imgs = [];
+        for (const m of recentUserMsgs) {
+            if (Array.isArray(m.parts)) {
+                for (const p of m.parts) {
+                    if (p.type === 'image' && p.data) imgs.push(p.data);
+                }
+            }
+        }
+        if (Number.isInteger(idx) && idx >= 0 && idx < imgs.length) {
+            newUrl = imgs[idx];
+            finalDesc = finalDesc || '和对方一起换的新头像';
+        }
+    }
+    if (!newUrl) return;
+    const isCouple = /情头|情侣头像|couple/i.test(finalDesc);
+    chat.avatar = newUrl;
+    chat.currentAvatarDesc = finalDesc;
+    const existingItem = chat.avatarLibrary.find(item => item.url === newUrl);
+    if (existingItem) {
+        if (finalDesc) existingItem.desc = finalDesc;
+        existingItem.isCouple = existingItem.isCouple || isCouple;
+        existingItem.updatedAt = Date.now();
+    } else {
+        chat.avatarLibrary.unshift({
+            id: 'av_' + Date.now().toString(36),
+            url: newUrl,
+            desc: finalDesc,
+            isCouple,
+            addedAt: Date.now()
+        });
+    }
+    const cName = chat.remarkName || chat.realName || chat.name || '对方';
+    chat.history ||= [];
+    chat.history.push({
+        id: `msg_avatar_${Date.now()}`,
+        role: 'system',
+        content: `[system-display:${cName} 更换了头像${finalDesc ? `（${finalDesc}）` : ''}]`,
+        parts: [],
+        timestamp: Date.now()
+    });
+    if (typeof saveData === 'function') await saveData();
+    if (typeof renderMessages === 'function' && typeof currentChatId !== 'undefined' && currentChatId === chat.id) {
+        renderMessages(false, true);
+    }
+    if (typeof showToast === 'function') showToast(`${cName} 更换了新头像`);
+}
+
+function openAvatarPokeModal() {
+    if (typeof currentChatType === 'undefined' || currentChatType !== 'private') {
+        if (typeof showToast === 'function') showToast('请在单人私聊中打开头像库与拍一拍设置');
+        return;
+    }
+    const chat = (db.characters || []).find(c => c.id === currentChatId);
+    if (!chat) return;
+    chat.avatarLibrary ||= [];
+    if (chat.avatar && !chat.avatarLibrary.some(item => item.url === chat.avatar)) {
+        chat.avatarLibrary.unshift({ id: 'av_init', url: chat.avatar, desc: chat.currentAvatarDesc || '当前默认头像', addedAt: Date.now() });
+    }
+    const dialog = document.createElement('dialog');
+    dialog.className = 'uwu-memory-dialog uwu-avatar-poke-dialog';
+    const cName = chat.remarkName || chat.realName || chat.name || '角色';
+
+    const drawModal = () => {
+        dialog.replaceChildren();
+        const title = document.createElement('h2');
+        title.textContent = `${cName} · 头像库与拍一拍`;
+        const hint = document.createElement('p');
+        hint.className = 'uwu-memory-guide';
+        hint.textContent = '把常用头像加入头像库并写一句简短描述；平时聊天不占 Token，提到头像或发两张图说一起换情头时，AI 会自动感知并自己换上。双击聊天室头像即可触发“拍一拍”。';
+
+        // Poke settings section
+        const pokeBox = document.createElement('div');
+        pokeBox.className = 'uwu-poke-box';
+        const myPokeLbl = document.createElement('label');
+        myPokeLbl.className = 'uwu-poke-label';
+        myPokeLbl.textContent = '我的拍一拍文案（自定义）';
+        const myPokeInput = document.createElement('input');
+        myPokeInput.type = 'text';
+        myPokeInput.value = db.myPokeText || '';
+        myPokeInput.placeholder = '例如：拍了拍我的脑袋';
+        myPokeInput.className = 'uwu-poke-input';
+        myPokeLbl.append(myPokeInput);
+
+        const aiPokeLbl = document.createElement('label');
+        aiPokeLbl.className = 'uwu-poke-label';
+        aiPokeLbl.textContent = `${cName} 的拍一拍文案（留空时 AI 下次聊天会自动设定）`;
+        const aiPokeInput = document.createElement('input');
+        aiPokeInput.type = 'text';
+        aiPokeInput.value = chat.pokeText || '';
+        aiPokeInput.placeholder = '留空让 AI 首次自动生成，也可手动填写';
+        aiPokeInput.className = 'uwu-poke-input';
+        aiPokeLbl.append(aiPokeInput);
+
+        const savePokeBtn = document.createElement('button');
+        savePokeBtn.type = 'button';
+        savePokeBtn.className = 'btn btn-primary';
+        savePokeBtn.textContent = '保存拍一拍设置';
+        savePokeBtn.onclick = async () => {
+            db.myPokeText = myPokeInput.value.trim();
+            chat.pokeText = aiPokeInput.value.trim();
+            if (typeof saveData === 'function') await saveData();
+            if (typeof showToast === 'function') showToast('拍一拍文案已保存');
+        };
+        pokeBox.append(myPokeLbl, aiPokeLbl, savePokeBtn);
+
+        // Avatar upload section
+        const addBox = document.createElement('div');
+        addBox.className = 'uwu-avatar-upload-box';
+        const addTitle = document.createElement('strong');
+        addTitle.textContent = '添加新头像到头像库';
+        addTitle.className = 'uwu-avatar-upload-title';
+        const descInput = document.createElement('input');
+        descInput.type = 'text';
+        descInput.placeholder = '简短描述（如：头顶小猫情头 / 野外自拍）';
+        descInput.className = 'uwu-avatar-desc-input';
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'image/*';
+        fileInput.onchange = async () => {
+            const file = fileInput.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async () => {
+                const url = reader.result;
+                const desc = descInput.value.trim() || file.name.replace(/\.[^.]+$/, '');
+                chat.avatarLibrary.unshift({ id: 'av_' + Date.now().toString(36), url, desc, addedAt: Date.now() });
+                if (typeof saveData === 'function') await saveData();
+                drawModal();
+            };
+            reader.readAsDataURL(file);
+        };
+        addBox.append(addTitle, descInput, fileInput);
+
+        // Avatar grid
+        const grid = document.createElement('div');
+        grid.className = 'uwu-avatar-lib-grid';
+        for (const item of chat.avatarLibrary) {
+            const isCur = chat.avatar === item.url;
+            const card = document.createElement('div');
+            card.className = `uwu-avatar-lib-card${isCur ? ' is-current' : ''}`;
+            const img = document.createElement('img');
+            img.src = item.url;
+            img.alt = item.desc || '';
+            const p = document.createElement('p');
+            const coupleTag = (item.isCouple || /情头|情侣头像/i.test(item.desc || '')) ? '💑 ' : '';
+            p.textContent = (isCur ? '✓ ' : '') + coupleTag + (item.desc || '未命名头像');
+            const btns = document.createElement('div');
+            btns.className = 'uwu-av-btns';
+            if (!isCur) {
+                const useBtn = document.createElement('button');
+                useBtn.type = 'button';
+                useBtn.textContent = '使用';
+                useBtn.onclick = async () => {
+                    chat.avatar = item.url;
+                    chat.currentAvatarDesc = item.desc || '';
+                    if (typeof saveData === 'function') await saveData();
+                    if (typeof renderMessages === 'function') renderMessages(false, true);
+                    drawModal();
+                };
+                btns.append(useBtn);
+            }
+            const delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.textContent = '删';
+            delBtn.onclick = async () => {
+                chat.avatarLibrary = chat.avatarLibrary.filter(x => x.id !== item.id);
+                if (typeof saveData === 'function') await saveData();
+                drawModal();
+            };
+            btns.append(delBtn);
+            card.append(img, p, btns);
+            grid.append(card);
+        }
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'btn btn-secondary';
+        closeBtn.textContent = '关闭';
+        closeBtn.onclick = () => dialog.close();
+        dialog.append(title, hint, pokeBox, addBox, grid, closeBtn);
+    };
+
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    drawModal();
+    document.body.append(dialog);
+    dialog.showModal();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('click', event => {
+        if (event.target?.closest?.('#avatar-poke-panel-btn')) {
+            openAvatarPokeModal();
+        }
+    });
+
+    // Double-tap / double-click avatar in chat room to trigger WeChat-style "拍一拍"
+    let lastTapTime = 0;
+    let lastTapEl = null;
+    document.addEventListener('click', async event => {
+        const img = event.target?.closest?.('.message-info img');
+        if (!img || typeof currentChatType === 'undefined' || currentChatType !== 'private') return;
+        const now = Date.now();
+        if (lastTapEl === img && now - lastTapTime <= 380) {
+            lastTapTime = 0;
+            lastTapEl = null;
+            event.preventDefault();
+            event.stopPropagation();
+            img.classList.remove('uwu-poke-shake');
+            void img.offsetWidth;
+            img.classList.add('uwu-poke-shake');
+
+            const chat = (db.characters || []).find(c => c.id === currentChatId);
+            if (!chat) return;
+            const wrapper = img.closest('.message-wrapper');
+            const isSelf = wrapper?.classList.contains('sent');
+            const cName = chat.remarkName || chat.realName || chat.name || '对方';
+            const displayLine = isSelf
+                ? `你${(db.myPokeText || '').trim() || '拍了拍自己'}`
+                : `你${(chat.pokeText || '').trim() || `拍了拍 ${cName}`}`;
+
+            chat.history ||= [];
+            chat.history.push({
+                id: `msg_poke_${Date.now()}`,
+                role: isSelf ? 'system' : 'user',
+                content: isSelf ? `[system-display:${displayLine}]` : `[系统动作：${displayLine}]`,
+                parts: [],
+                timestamp: Date.now()
+            });
+            if (typeof saveData === 'function') await saveData();
+            if (typeof renderMessages === 'function') renderMessages(false, true);
+            if (typeof showToast === 'function') showToast(displayLine);
+        } else {
+            lastTapTime = now;
+            lastTapEl = img;
+        }
+    }, true);
+});
+    

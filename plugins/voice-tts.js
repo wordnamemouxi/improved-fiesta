@@ -334,7 +334,8 @@
     }
 
     async function fetchTtsModels(provider, endpoint, apiKey) {
-        if (provider === 'minimax' && !(endpoint || '').trim()) {
+        if (provider === 'minimax') {
+            // MiniMax 官方 /v1/models 只返回 M 系列文本模型、不列语音模型；直接返回官方 Speech 全系模型
             return ['speech-2.8-hd', 'speech-2.8-turbo', 'speech-2.6-hd', 'speech-2.6-turbo', 'speech-02-hd', 'speech-02-turbo'];
         }
         const url = resolveModelsUrl(endpoint, provider);
@@ -402,6 +403,13 @@
 
         const syncProviderUi = () => {
             gidEl.style.display = provEl.value === 'minimax' ? 'block' : 'none';
+            if (provEl.value === 'minimax') {
+                modelEl.placeholder = '语音合成模型名（默认 speech-2.8-hd）';
+            } else if (provEl.value === 'siliconflow') {
+                modelEl.placeholder = '语音合成模型名（如 FunAudioLLM/CosyVoice2-0.5B）';
+            } else {
+                modelEl.placeholder = '语音合成模型名（可选）';
+            }
         };
         provEl.addEventListener('change', syncProviderUi);
         syncProviderUi();

@@ -593,6 +593,35 @@ document.addEventListener('DOMContentLoaded', () => {
     injectWorkshopHTML();
 });
 ;
+// --- 绘图工坊轻量持久化：只写 workshopSettings 单条记录并防抖，避免每次粘贴/打字触发全库 saveData 卡死 ---
+let __workshopSaveTimer = null;
+async function saveWorkshopSettingsFast(immediate = false) {
+    const doWrite = async () => {
+        try {
+            if (typeof dexieDB !== 'undefined' && dexieDB && dexieDB.globalSettings && typeof db !== 'undefined' && db.workshopSettings) {
+                await dexieDB.globalSettings.put({ key: 'workshopSettings', value: db.workshopSettings });
+                return;
+            }
+        } catch (e) {
+            console.warn('[Workshop] Fast save failed, falling back to saveData:', e);
+        }
+        if (typeof saveData === 'function') {
+            await saveData();
+        }
+    };
+    if (__workshopSaveTimer) {
+        clearTimeout(__workshopSaveTimer);
+        __workshopSaveTimer = null;
+    }
+    if (immediate) {
+        return doWrite();
+    }
+    __workshopSaveTimer = setTimeout(() => {
+        __workshopSaveTimer = null;
+        doWrite();
+    }, 350);
+}
+
 // --- 设置绑定与持久化 ---
 async function initWorkshopSettings() {
     if (!db.workshopSettings) return;
@@ -664,23 +693,23 @@ async function initWorkshopSettings() {
         if (official) official.key = settings.gptApiKey;
     }
     
-    // 辅助函数：绑定输入框
+    // 辅助函数：绑定输入框（仅轻量保存 workshopSettings，粘贴/输入零卡顿）
     const bindInput = (id, key, isNumber = false) => {
         const el = document.getElementById(id);
         if (!el) return;
         if (settings[key] !== undefined) {
             el.value = settings[key];
         }
-        // 使用 input 事件实现实时保存，避免失去焦点才保存的问题
-        el.addEventListener('input', async (e) => {
+        // 使用 input 事件防抖轻量保存，避免粘贴长画师串时卡死主线程
+        el.addEventListener('input', (e) => {
             if (!e.isTrusted) return; // 防止程序触发的事件导致死循环
             settings[key] = isNumber ? Number(e.target.value) : e.target.value;
-            await saveData();
+            saveWorkshopSettingsFast(false);
         });
-        // 保留 change 事件以兼容某些特殊情况或程序触发的更新
+        // 失去焦点或程序触发 change 时立即落盘单条配置
         el.addEventListener('change', async (e) => {
             settings[key] = isNumber ? Number(e.target.value) : e.target.value;
-            await saveData();
+            await saveWorkshopSettingsFast(true);
         });
     };
 
@@ -959,7 +988,7 @@ function initApiPresets() {
             db.workshopSettings[provider + 'ApiUrl'] = preset.url;
             db.workshopSettings[provider + 'ApiKey'] = preset.key;
             
-            await saveData();
+            saveWorkshopSettingsFast(false);
         }
     };
     
@@ -1034,9 +1063,9 @@ function initApiPresets() {
     }
 
     if (customModelInput) {
-        customModelInput.addEventListener('input', async (e) => {
+        customModelInput.addEventListener('input', (e) => {
             db.workshopSettings.novelaiModel = e.target.value.trim();
-            await saveData();
+            saveWorkshopSettingsFast(false);
         });
     }
     
@@ -1108,13 +1137,12 @@ function initPromptPresets() {
             if (characterInput) characterInput.value = preset.character || '';
             negativeInput.value = preset.negative;
             
-            // 手动触发 input 和 change 事件以保存到 settings
-            positiveInput.dispatchEvent(new Event('input'));
-            if (characterInput) characterInput.dispatchEvent(new Event('input'));
-            negativeInput.dispatchEvent(new Event('input'));
-            positiveInput.dispatchEvent(new Event('change'));
-            if (characterInput) characterInput.dispatchEvent(new Event('change'));
-            negativeInput.dispatchEvent(new Event('change'));
+            if (db.workshopSettings) {
+                db.workshopSettings.positivePrompt = preset.positive;
+                db.workshopSettings.characterPrompt = preset.character || '';
+                db.workshopSettings.negativePrompt = preset.negative;
+                await saveWorkshopSettingsFast(true);
+            }
             
             showToast('已应用预设: ' + preset.name);
         }

@@ -186,34 +186,27 @@
         }
     }
 
+    function isWebPageInForeground() {
+        try {
+            if (document.visibilityState === 'visible') return true;
+        } catch (e) {}
+        return false;
+    }
+
     let notifySeq = 0;
     async function showSystemNotification(chat, previewText, msgId = '') {
         if (!chat || !previewText) return;
+        // 只要用户当前停留在网页内（任意页面/任意角色），都不弹出通知
+        if (isWebPageInForeground()) return;
+
         const dedupKey = msgId ? `${chat.id}:id:${msgId}` : `${chat.id}:${previewText}`;
         const prevTs = lastNotifyDedup.get(dedupKey) || 0;
         if (Date.now() - prevTs < 3000) return;
         lastNotifyDedup.set(dedupKey, Date.now());
         const title = chat.remarkName || chat.realName || chat.name || '新消息';
         const body = previewText;
-        const rawAvatar = (typeof chat.avatar === 'string' && chat.avatar.trim()) ? chat.avatar.trim() : '';
-        const safeIcon = (rawAvatar && (!rawAvatar.startsWith('data:') || rawAvatar.length <= 180000)) ? rawAvatar : '';
 
-        const inSameChatForeground = (
-            document.visibilityState === 'visible' &&
-            typeof currentChatId !== 'undefined' &&
-            currentChatId === chat.id &&
-            document.getElementById('chat-room-screen')?.classList.contains('active')
-        );
-        if (inSameChatForeground) return;
-
-        // App 在前台但处于其他页面/其他聊天室时，先弹内建顶部横幅
-        if (document.visibilityState === 'visible' && typeof window.showToast === 'function') {
-            try {
-                window.showToast({ name: title, avatar: safeIcon || './icon-192.png', message: body });
-            } catch (e) {}
-        }
-
-        // 若已授权系统通知，则通过 Service Worker 逐条弹出独立手机系统通知
+        // 仅在网页处于后台/锁屏/切出状态时，通过 Service Worker 逐条弹出系统通知
         try {
             if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
             if (localStorage.getItem(OS_NOTIFY_KEY) === '0') return;
@@ -234,9 +227,13 @@
     async function showSystemNotificationsIndividually(chat, previewItems) {
         if (!chat || !Array.isArray(previewItems) || !previewItems.length) return;
         for (let i = 0; i < previewItems.length; i++) {
+            if (isWebPageInForeground()) break;
             const item = previewItems[i];
             if (i > 0) {
-                await new Promise(res => setTimeout(res, 450));
+                // 模拟真人发消息节奏：按下一句长度自然间隔约 2.0s ~ 4.2s
+                const baseDelay = 1800 + Math.min((item.text || '').length * 45, 1600) + Math.floor(Math.random() * 800);
+                await new Promise(res => setTimeout(res, baseDelay));
+                if (isWebPageInForeground()) break;
             }
             await showSystemNotification(chat, item.text, item.id);
         }
@@ -424,7 +421,7 @@
                     chat.autoReply ||= {};
                     chat.autoReply.nextPingAt = now + mins * 60 * 1000;
                     chat.autoReply.nextPingReason = reason;
-                    chat.autoReply.nextPingSetAt = now;
+                    chat.autoReply.nextPingSetAt = Math.max(now, getLastUserTimestamp(chat));
                     body = body.replace(/\[NEXT_PING:[^\]]+\]/gi, '').trim();
                     cleaned = head + body;
                     if (typeof window.saveData === 'function') {
@@ -468,22 +465,38 @@
         window.sendMessage = wrapped;
     }
 
-    // 4. 融合原版 checkAutoReply：动态排程优先 + 用户发过消息自动作废 + 固定间隔兜底
+    // 4. 融合原版 checkAutoReply：动态排程优先 + 并发保护（与 A 聊天绝不误清 B 的定时）+ 失败回滚重试 + 固定间隔兜底
+    const inFlightPingIds = new Set();
+    let deferredRetryTimer = null;
+
+    function countAssistantMessages(char) {
+        if (!Array.isArray(char?.history)) return 0;
+        let cnt = 0;
+        for (const m of char.history) {
+            if (m && m.role === 'assistant' && !m.isThinking && !m.isStatusUpdate) cnt++;
+        }
+        return cnt;
+    }
+
     function hookCheckAutoReply() {
         if (typeof window.checkAutoReply !== 'function' || window.checkAutoReply.__smartWrapped) return;
         const wrapped = async function () {
             if (!window.db?.characters) return;
             const now = Date.now();
+            const someoneGenerating = (typeof isGenerating !== 'undefined' && Boolean(isGenerating));
+            let needDeferredRetry = false;
+
             for (const char of window.db.characters) {
                 const ar = char.autoReply;
                 if (!ar || (!ar.enabled && !ar.smartEnabled)) continue;
                 if (!Array.isArray(char.history) || char.history.length === 0) continue;
+                if (inFlightPingIds.has(char.id)) continue;
 
                 const lastMsgTime = char.history[char.history.length - 1]?.timestamp || 0;
                 const lastUserTime = getLastUserTimestamp(char);
 
-                // 二次防线：如果在 AI 定下动态预约后，用户又发过任何新消息，则旧预约立刻作废！
-                if (ar.nextPingAt && ar.nextPingSetAt && lastUserTime > ar.nextPingSetAt) {
+                // 二次防线：仅当「这个角色自己」在定下预约后又收到了用户发给他的新消息，才作废他自己的旧预约
+                if (ar.nextPingAt && ar.nextPingSetAt && lastUserTime > ar.nextPingSetAt + 1000) {
                     clearSmartSchedule(char);
                     if (typeof window.saveData === 'function') await window.saveData().catch(() => {});
                 }
@@ -494,29 +507,76 @@
                         // 还没到 AI 约定的动态时间（例如深夜晚安约了明早），跳过固定间隔避免半夜抢发！
                         continue;
                     }
-                    // 到达动态预约时间：触发主动发消息
-                    const reason = ar.nextPingReason || '';
-                    clearSmartSchedule(char);
-                    ar.lastTriggerTime = now;
-                    if (reason) pendingReasonMap.set(char.id, reason);
-                    console.log(`[SmartAutoReply] Dynamic ping triggered for ${char.remarkName || char.realName}: ${reason || 'natural check-in'}`);
-                    if (typeof window.saveData === 'function') await window.saveData();
-                    if (typeof window.getAiReply === 'function') await window.getAiReply(char.id, 'private', true);
+                    // 若当前用户正在和别的角色聊天且正在生成回复，暂缓本次触发，绝不清空当前角色的预约！
+                    if (someoneGenerating) {
+                        needDeferredRetry = true;
+                        console.log(`[SmartAutoReply] Deferred ping for ${char.remarkName || char.realName} while another chat is generating`);
+                        continue;
+                    }
+                    // 到达动态预约时间：先备份预约并在失败/无回复时自动回滚，防止定时凭空消失
+                    const prevPingAt = ar.nextPingAt;
+                    const prevReason = ar.nextPingReason || '';
+                    const prevSetAt = ar.nextPingSetAt || 0;
+                    const beforeAssistantCount = countAssistantMessages(char);
+
+                    inFlightPingIds.add(char.id);
+                    try {
+                        clearSmartSchedule(char);
+                        ar.lastTriggerTime = now;
+                        if (prevReason) pendingReasonMap.set(char.id, prevReason);
+                        console.log(`[SmartAutoReply] Dynamic ping triggered for ${char.remarkName || char.realName}: ${prevReason || 'natural check-in'}`);
+                        if (typeof window.getAiReply === 'function') {
+                            await window.getAiReply(char.id, 'private', true);
+                        }
+                        const afterAssistantCount = countAssistantMessages(char);
+                        if (afterAssistantCount <= beforeAssistantCount) {
+                            // 本次后台请求未产生有效回复（例如网络波动/499/限流），2 分钟后自动重试，不丢预约
+                            ar.nextPingAt = Date.now() + 2 * 60 * 1000;
+                            ar.nextPingReason = prevReason;
+                            ar.nextPingSetAt = prevSetAt;
+                            console.warn(`[SmartAutoReply] Ping produced no reply for ${char.remarkName || char.realName}, rescheduled in 2m`);
+                        }
+                        if (typeof window.saveData === 'function') await window.saveData().catch(() => {});
+                    } catch (err) {
+                        ar.nextPingAt = Math.max(prevPingAt, Date.now() + 2 * 60 * 1000);
+                        ar.nextPingReason = prevReason;
+                        ar.nextPingSetAt = prevSetAt;
+                        console.warn(`[SmartAutoReply] Ping failed for ${char.remarkName || char.realName}, restored schedule:`, err);
+                        if (typeof window.saveData === 'function') await window.saveData().catch(() => {});
+                    } finally {
+                        inFlightPingIds.delete(char.id);
+                    }
                     continue;
                 }
 
                 // 路径 B：固定间隔基础兜底（仅当开启了原版自动发消息开关，且当前无待执行的动态预约时）
                 if (ar.enabled) {
+                    if (someoneGenerating) {
+                        needDeferredRetry = true;
+                        continue;
+                    }
                     const intervalMs = (ar.interval || 60) * 60 * 1000;
                     const lastTriggerTime = ar.lastTriggerTime || 0;
                     if (now - lastTriggerTime < intervalMs) continue;
                     if (now - lastMsgTime > intervalMs) {
-                        console.log(`[SmartAutoReply] Fallback fixed-interval auto-reply triggered for ${char.remarkName || char.realName}`);
-                        ar.lastTriggerTime = now;
-                        if (typeof window.saveData === 'function') await window.saveData();
-                        if (typeof window.getAiReply === 'function') await window.getAiReply(char.id, 'private', true);
+                        inFlightPingIds.add(char.id);
+                        try {
+                            console.log(`[SmartAutoReply] Fallback fixed-interval auto-reply triggered for ${char.remarkName || char.realName}`);
+                            ar.lastTriggerTime = now;
+                            if (typeof window.saveData === 'function') await window.saveData().catch(() => {});
+                            if (typeof window.getAiReply === 'function') await window.getAiReply(char.id, 'private', true);
+                        } finally {
+                            inFlightPingIds.delete(char.id);
+                        }
                     }
                 }
+            }
+
+            if (needDeferredRetry && !deferredRetryTimer) {
+                deferredRetryTimer = setTimeout(() => {
+                    deferredRetryTimer = null;
+                    if (typeof window.checkAutoReply === 'function') window.checkAutoReply();
+                }, 12000);
             }
         };
         wrapped.__smartWrapped = true;

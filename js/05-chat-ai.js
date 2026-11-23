@@ -4108,23 +4108,19 @@ async function getAiReply(chatId, chatType, isBackground = false) {
             }
 
             let fullResponse = "";
+            let nativeReasoning = extractNativeReasoningText(result, false);
             if (provider === 'gemini') {
-                fullResponse = result.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                const gParts = result.candidates?.[0]?.content?.parts;
+                if (Array.isArray(gParts)) {
+                    fullResponse = gParts.filter(p => p && !p.thought && typeof p.text === 'string').map(p => p.text).join('');
+                } else {
+                    fullResponse = result.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                }
             } else {
-                fullResponse = result.choices[0].message.content;
+                fullResponse = result.choices?.[0]?.message?.content || "";
             }
             
-            // === 【补丁：把被吃掉的开头补回来】 ===
-            // 仅在 CoT 开启且检测到闭合标签时补全
-            const cotEnabled = db.cotSettings && db.cotSettings.enabled;
-            // 【修改】去掉了 !isBackground，确保后台模式也能正确补全标签
-            if (cotEnabled && fullResponse && !fullResponse.trim().startsWith('<thinking>')) {
-                 if (fullResponse.includes('</thinking>')) {
-                     fullResponse = '<thinking>' + fullResponse;
-                 }
-            }
-            // ===================================
-            
+            fullResponse = normalizeThinkingEnvelope(fullResponse, nativeReasoning);
             
             await handleAiReplyContent(fullResponse, chat, chatId, chatType, isBackground);
             completed = { usage: memoryPrompt.parseUsage(result) };
@@ -4156,7 +4152,7 @@ async function getAiReply(chatId, chatType, isBackground = false) {
 
 async function processStream(response, chat, apiType, targetChatId, targetChatType, isBackground = false) {
     const reader = response.body.getReader(), decoder = new TextDecoder();
-    let fullResponse = "", accumulatedChunk = "", usage = null;
+    let fullResponse = "", nativeReasoning = "", accumulatedChunk = "", usage = null;
     for (; ;) {
         const {done, value} = await reader.read();
         if (done) break;
@@ -4170,6 +4166,7 @@ async function processStream(response, chat, apiType, targetChatId, targetChatTy
                     if (data.trim() !== "[DONE]") {
                         try {
                             const packet = JSON.parse(data);
+                            nativeReasoning += extractNativeReasoningText(packet, true);
                             fullResponse += packet.choices?.[0]?.delta?.content || "";
                             usage = memoryPrompt.parseUsage(packet) ?? usage;
                         } catch (e) { 
@@ -4182,7 +4179,14 @@ async function processStream(response, chat, apiType, targetChatId, targetChatTy
     if (apiType === "gemini") {
         try {
             const parsedStream = JSON.parse(accumulatedChunk);
-            fullResponse = parsedStream.map(item => item.candidates?.[0]?.content?.parts?.[0]?.text || "").join('');
+            nativeReasoning = parsedStream.map(item => extractNativeReasoningText(item, true)).join('');
+            fullResponse = parsedStream.map(item => {
+                const gParts = item.candidates?.[0]?.content?.parts;
+                if (Array.isArray(gParts)) {
+                    return gParts.filter(p => p && !p.thought && typeof p.text === 'string').map(p => p.text).join('');
+                }
+                return '';
+            }).join('');
             usage = parsedStream.map(item => memoryPrompt.parseUsage(item)).findLast(Boolean) ?? null;
         } catch (e) {
             console.error("Error parsing Gemini stream:", e, "Chunk:", accumulatedChunk);
@@ -4190,21 +4194,61 @@ async function processStream(response, chat, apiType, targetChatId, targetChatTy
             return;
         }
     }
-    // === 【补丁：补全流式输出时丢失的开头标签】 ===
-        // === 【补丁：补全流式输出时丢失的开头标签】 ===
-    // 无论前台后台，只要是CoT开启且被预填吃掉了开头，都要补回来
-    const cotEnabled = db.cotSettings && db.cotSettings.enabled;
-    // 【修改】去掉了 !isBackground，确保后台模式也能正确补全标签
-    if (cotEnabled && fullResponse && !fullResponse.trim().startsWith('<thinking>')) {
-         // 这里判断：如果内容里有闭合的 </thinking> 但开头没有 <thinking>，说明开头被 Prefill 吃掉了
-         if (fullResponse.includes('</thinking>')) {
-             fullResponse = '<thinking>' + fullResponse;
-         }
-    }
-
-    // ===================
+    fullResponse = normalizeThinkingEnvelope(fullResponse, nativeReasoning);
     await handleAiReplyContent(fullResponse, chat, targetChatId, targetChatType, isBackground);
     return { usage };
+}
+
+function extractNativeReasoningText(packetOrResult, isStream = false) {
+    if (!packetOrResult) return '';
+    try {
+        if (isStream) {
+            const delta = packetOrResult.choices?.[0]?.delta;
+            if (delta) {
+                return delta.reasoning_content || delta.reasoning || delta.thinking || '';
+            }
+            const parts = packetOrResult.candidates?.[0]?.content?.parts;
+            if (Array.isArray(parts)) {
+                return parts.filter(p => p && p.thought && typeof p.text === 'string').map(p => p.text).join('');
+            }
+            return '';
+        }
+        const msg = packetOrResult.choices?.[0]?.message;
+        if (msg) {
+            return msg.reasoning_content || msg.reasoning || msg.thinking || '';
+        }
+        const parts = packetOrResult.candidates?.[0]?.content?.parts;
+        if (Array.isArray(parts)) {
+            return parts.filter(p => p && p.thought && typeof p.text === 'string').map(p => p.text).join('');
+        }
+    } catch (e) {}
+    return '';
+}
+
+function normalizeThinkingEnvelope(fullResponse, nativeReasoning = '') {
+    let text = typeof fullResponse === 'string' ? fullResponse : '';
+    const reasoning = typeof nativeReasoning === 'string' ? nativeReasoning.trim() : '';
+
+    // 统一把 <think>...</think> 转为 <thinking>...</thinking>
+    text = text.replace(/<think\b[^>]*>/gi, '<thinking>').replace(/<\/think>/gi, '</thinking>');
+
+    // 若接口返回了原生 reasoning_content / thought，且正文里还没有 <thinking> 块，则自动拼接到最前面
+    if (reasoning && !text.includes('</thinking>')) {
+        const cleanedReasoning = reasoning.replace(/<\/?thinking>/gi, '').trim();
+        if (cleanedReasoning) {
+            text = `<thinking>\n${cleanedReasoning}\n</thinking>\n` + text;
+        }
+    }
+
+    // 兼容 Prefill 吃掉开头 <thinking> 的情况
+    if (text && !text.trim().startsWith('<thinking>') && text.includes('</thinking>')) {
+        const openIdx = text.indexOf('<thinking>');
+        const closeIdx = text.indexOf('</thinking>');
+        if (openIdx === -1 || closeIdx < openIdx) {
+            text = '<thinking>' + text;
+        }
+    }
+    return text;
 }
 
 async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChatType, isBackground = false) {

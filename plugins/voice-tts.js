@@ -14,6 +14,8 @@
     const IDB_NAME = 'uwu_voice_tts_db';
     const IDB_STORE = 'audio_blobs';
     let voiceDbPromise = null;
+    const pendingAudio = new Map();
+    const PREVIEW_TEXT = '你好，这是一条语音试听。';
 
     function openVoiceDb() {
         if (voiceDbPromise) return voiceDbPromise;
@@ -65,25 +67,13 @@
         } catch (e) {}
     }
 
-    async function deleteSavedAudioBlob(key) {
-        try {
-            const db = await openVoiceDb();
-            if (!db) return;
-            await new Promise((resolve) => {
-                const tx = db.transaction(IDB_STORE, 'readwrite');
-                tx.objectStore(IDB_STORE).delete(key);
-                tx.oncomplete = () => resolve(true);
-                tx.onerror = () => resolve(false);
-            });
-        } catch (e) {}
-    }
-
     function getVoiceCacheKey(chatId, msgId, text) {
         if (msgId) return `msg::${chatId || ''}::${msgId}`;
         return `txt::${chatId || ''}::${(text || '').trim()}`;
     }
     let currentAudio = null;
     let currentBubbleEl = null;
+    let playbackVersion = 0;
 
     function loadConfig() {
         try {
@@ -101,6 +91,7 @@
     }
 
     function stopCurrentAudio() {
+        playbackVersion++;
         if (currentAudio) {
             try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (e) {}
             currentAudio = null;
@@ -109,6 +100,31 @@
             currentBubbleEl.classList.remove('uwu-voice-playing', 'uwu-voice-loading');
             currentBubbleEl = null;
         }
+    }
+
+    function resolveMiniMaxEndpoint(endpoint, groupId) {
+        const input = (endpoint || '').trim() || 'https://api.minimax.io';
+        let url;
+        try {
+            url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : `https://${input}`);
+            if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
+        } catch {
+            throw new Error('MiniMax 接口地址无效，请填写域名或完整的 HTTP(S) 接口地址');
+        }
+        if (url.pathname === '/') url.pathname = '/v1/t2a_v2';
+        if (groupId && !url.searchParams.has('GroupId')) url.searchParams.set('GroupId', groupId);
+        url.hash = '';
+        return url.href;
+    }
+
+    function miniMaxApiError(response) {
+        const code = Number(response?.base_resp?.status_code);
+        if (code === 1004) return new Error('MiniMax 鉴权失败（1004），请检查 API Key、地址和 GroupId');
+        if (Number.isFinite(code) && code !== 0) {
+            const detail = String(response.base_resp.status_msg || '').trim().slice(0, 120);
+            return new Error(`MiniMax 接口报错（${code}）${detail ? '：' + detail : ''}`);
+        }
+        return null;
     }
 
     async function synthesizeSpeech({ provider, apiKey, groupId, endpoint, model, voiceId, text, speed = 1.0, pitch = 0, emotion = '', stylePrefix = '' }) {
@@ -132,8 +148,7 @@
                 latency: 'normal'
             };
         } else if (provider === 'minimax') {
-            const base = (endpoint || '').trim() || 'https://api.minimax.cn/v1/t2a_v2';
-            url = groupId ? `${base}${base.includes('?') ? '&' : '?'}GroupId=${encodeURIComponent(groupId)}` : base;
+            url = resolveMiniMaxEndpoint(endpoint, groupId);
             headers['Authorization'] = `Bearer ${apiKey}`;
             const prefix = (stylePrefix || '').trim();
             const spokenText = prefix ? `${prefix} ${cleanText}` : cleanText;
@@ -150,6 +165,7 @@
                 model: (model || '').trim() || 'speech-2.8-hd',
                 text: spokenText,
                 stream: false,
+                output_format: 'hex',
                 voice_setting: voiceSetting,
                 audio_setting: {
                     sample_rate: 32000,
@@ -191,110 +207,118 @@
             };
         }
 
-        const resp = await fetch(url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body)
-        });
-
-        if (!resp.ok) {
-            const errTxt = await resp.text().catch(() => '');
-            throw new Error(`语音接口报错 (${resp.status}): ${errTxt.slice(0, 120)}`);
+        let resp;
+        try {
+            resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+        } catch (error) {
+            throw new Error('无法连接语音接口。请检查地址、网络或浏览器跨域设置', { cause: error });
         }
 
-        const ct = (resp.headers.get('content-type') || '').toLowerCase();
-        if (ct.includes('application/json')) {
-            const json = await resp.json();
-            // MiniMax 返回 hex 编码音频在 data.audio
+        if (resp.status === 401 || resp.status === 403) {
+            throw new Error(`语音接口鉴权失败（HTTP ${resp.status}），请检查 Key 和账号权限`);
+        }
+        if (!resp.ok) {
+            const detail = await resp.text().catch(() => '');
+            throw new Error(`语音接口报错（HTTP ${resp.status}）${detail ? '：' + detail.slice(0, 120) : ''}`);
+        }
+
+        const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+        const isAudio = contentType.startsWith('audio/') || contentType.includes('application/octet-stream');
+        if (contentType.includes('json') || (provider === 'minimax' && !isAudio)) {
+            const json = await resp.json().catch(() => null);
+            if (provider === 'minimax') {
+                const apiError = miniMaxApiError(json);
+                if (apiError) throw apiError;
+            }
             const hex = json?.data?.audio;
-            if (typeof hex === 'string' && hex.length > 20) {
+            if (typeof hex === 'string' && hex.length % 2 === 0 && /^[a-f0-9]+$/i.test(hex)) {
                 const bytes = new Uint8Array(hex.length / 2);
                 for (let i = 0; i < bytes.length; i++) {
-                    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+                    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
                 }
                 return new Blob([bytes], { type: 'audio/mpeg' });
             }
-            const errMsg = json?.base_resp?.status_msg || json?.error?.message || json?.message || '接口未返回音频数据';
-            throw new Error(errMsg);
+            const detail = json?.error?.message || json?.message;
+            throw new Error(`接口未返回可播放的音频${detail ? '：' + String(detail).slice(0, 120) : ''}`);
         }
 
         const blob = await resp.blob();
-        if (!blob || blob.size < 100) throw new Error('返回的音频数据无效');
+        if (!blob.size || contentType.startsWith('text/')) throw new Error('接口未返回可播放的音频');
         return blob;
     }
 
-    async function playVoiceForBubble(bubbleEl, text, chat, msgId, { forceRegenerate = false } = {}) {
+    function getBubbleAudioUrl(cacheKey, options, forceRegenerate) {
+        const pending = pendingAudio.get(cacheKey);
+        if (pending) {
+            if (!forceRegenerate || pending.forceRegenerate) return pending.promise;
+            return pending.promise.catch(() => {}).then(() => getBubbleAudioUrl(cacheKey, options, true));
+        }
+        const cachedUrl = audioCache.get(cacheKey);
+        if (!forceRegenerate && cachedUrl) return Promise.resolve(cachedUrl);
+
+        const promise = (async () => {
+            const savedAudio = forceRegenerate ? null : await getSavedAudioBlob(cacheKey);
+            const audio = savedAudio || await synthesizeSpeech(options);
+            if (!savedAudio) await saveAudioBlob(cacheKey, audio);
+            const url = URL.createObjectURL(audio);
+            if (cachedUrl) URL.revokeObjectURL(cachedUrl);
+            audioCache.set(cacheKey, url);
+            return url;
+        })().finally(() => pendingAudio.delete(cacheKey));
+        pendingAudio.set(cacheKey, { promise, forceRegenerate });
+        return promise;
+    }
+
+    async function playVoiceForBubble(bubbleEl, text, chat, msgId, { forceRegenerate = false, cfg = loadConfig() } = {}) {
         if (!forceRegenerate && currentBubbleEl === bubbleEl && currentAudio) {
             stopCurrentAudio();
             return;
         }
         stopCurrentAudio();
-
-        const cfg = loadConfig();
-        const provider = chat?.voiceTts?.provider || cfg.provider || 'siliconflow';
-        const voiceId = (chat?.voiceTts?.voiceId || '').trim();
-        const speed = chat?.voiceTts?.speed ?? 1.0;
-        const pitch = chat?.voiceTts?.pitch ?? 0;
-        const emotion = (chat?.voiceTts?.emotion || '').trim();
-        const stylePrefix = (chat?.voiceTts?.stylePrefix || '').trim();
+        const version = playbackVersion;
+        const voice = chat?.voiceTts || {};
         const cacheKey = getVoiceCacheKey(chat?.id, msgId, text);
 
         try {
             currentBubbleEl = bubbleEl;
             bubbleEl.classList.add('uwu-voice-loading');
+            const blobUrl = await getBubbleAudioUrl(cacheKey, {
+                provider: voice.provider || cfg.provider || 'siliconflow',
+                apiKey: (cfg.apiKey || '').trim(),
+                groupId: (cfg.groupId || '').trim(),
+                endpoint: (cfg.endpoint || '').trim(),
+                model: (cfg.model || '').trim(),
+                voiceId: (voice.voiceId || '').trim(),
+                text,
+                speed: voice.speed ?? 1.0,
+                pitch: voice.pitch ?? 0,
+                emotion: (voice.emotion || '').trim(),
+                stylePrefix: (voice.stylePrefix || '').trim()
+            }, forceRegenerate);
 
-            if (forceRegenerate) {
-                const oldUrl = audioCache.get(cacheKey);
-                if (oldUrl) {
-                    try { URL.revokeObjectURL(oldUrl); } catch (e) {}
-                    audioCache.delete(cacheKey);
-                }
-                await deleteSavedAudioBlob(cacheKey);
-            }
-
-            let blobUrl = audioCache.get(cacheKey);
-            if (!blobUrl) {
-                const savedBlob = await getSavedAudioBlob(cacheKey);
-                if (savedBlob) {
-                    blobUrl = URL.createObjectURL(savedBlob);
-                    audioCache.set(cacheKey, blobUrl);
-                }
-            }
-            if (!blobUrl) {
-                const audioBlob = await synthesizeSpeech({
-                    provider,
-                    apiKey: (cfg.apiKey || '').trim(),
-                    groupId: (cfg.groupId || '').trim(),
-                    endpoint: (cfg.endpoint || '').trim(),
-                    model: (cfg.model || '').trim(),
-                    voiceId,
-                    text,
-                    speed,
-                    pitch,
-                    emotion,
-                    stylePrefix
-                });
-                await saveAudioBlob(cacheKey, audioBlob);
-                blobUrl = URL.createObjectURL(audioBlob);
-                audioCache.set(cacheKey, blobUrl);
-            }
-
-            if (currentBubbleEl !== bubbleEl) return; // 期间被用户取消或点了另一条
+            if (version !== playbackVersion) return;
             bubbleEl.classList.remove('uwu-voice-loading');
             bubbleEl.classList.add('uwu-voice-playing');
-
             const audio = new Audio(blobUrl);
             currentAudio = audio;
-            audio.onended = () => stopCurrentAudio();
+            audio.onended = () => {
+                if (currentAudio === audio) stopCurrentAudio();
+            };
             audio.onerror = () => {
-                stopCurrentAudio();
-                if (typeof window.showToast === 'function') window.showToast('音频播放失败');
+                if (currentAudio === audio) {
+                    stopCurrentAudio();
+                    window.showToast?.('音频播放失败');
+                }
             };
             await audio.play();
-        } catch (err) {
-            stopCurrentAudio();
-            console.error('[VoiceTTS]', err);
-            if (typeof window.showToast === 'function') window.showToast(err.message || '语音合成失败');
+            return true;
+        } catch (error) {
+            if (version === playbackVersion) {
+                stopCurrentAudio();
+                console.error('[VoiceTTS]', error);
+                window.showToast?.(error.name === 'NotAllowedError' ? '音频已就绪，请再点一次播放' : (error.message || '语音合成失败'));
+            }
+            return false;
         }
     }
 
@@ -381,6 +405,13 @@
                     <button type="button" id="uwu-tts-fetch-models-btn" style="flex-shrink:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:12px;cursor:pointer;">拉取模型</button>
                 </div>
                 <select id="uwu-tts-model-select" style="display:none;width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#f8fafc;font-size:13px;"></select>
+                <div id="uwu-tts-preview-fields" hidden>
+                    <label for="uwu-tts-preview-voice">MiniMax 试听音色 ID</label>
+                    <div style="display:flex;gap:6px;margin-top:6px;">
+                        <input type="text" id="uwu-tts-preview-voice" placeholder="填入你的角色音色 ID" style="flex:1;min-width:0;padding:8px;border:1px solid #d0d7de;border-radius:8px;font-size:13px;">
+                        <button type="button" id="uwu-tts-preview-btn" style="flex-shrink:0;padding:8px 10px;border:1px solid #d0d7de;border-radius:8px;background:#fff;">试听</button>
+                    </div>
+                </div>
                 <button type="button" id="uwu-tts-save-api-btn" class="btn btn-primary" style="width:100%;box-sizing:border-box;padding:8px 12px;font-size:13px;">保存语音 API 设置</button>
             </div>
         `;
@@ -396,6 +427,9 @@
         const fetchBtn = document.getElementById('uwu-tts-fetch-models-btn');
         const modelSel = document.getElementById('uwu-tts-model-select');
         const saveBtn = document.getElementById('uwu-tts-save-api-btn');
+        const previewFields = document.getElementById('uwu-tts-preview-fields');
+        const previewVoice = document.getElementById('uwu-tts-preview-voice');
+        const previewBtn = document.getElementById('uwu-tts-preview-btn');
 
         provEl.value = cfg.provider || 'siliconflow';
         keyEl.value = cfg.apiKey || '';
@@ -404,7 +438,10 @@
         modelEl.value = cfg.model || '';
 
         const syncProviderUi = () => {
-            gidEl.style.display = provEl.value === 'minimax' ? 'block' : 'none';
+            const isMiniMax = provEl.value === 'minimax';
+            gidEl.style.display = isMiniMax ? 'block' : 'none';
+            previewFields.hidden = !isMiniMax;
+            epEl.placeholder = isMiniMax ? 'MiniMax 域名或完整语音接口地址' : '自定义接口 / 跨域反代地址（留空用官方默认）';
             if (provEl.value === 'minimax') {
                 modelEl.placeholder = '语音合成模型名（默认 speech-2.8-hd）';
             } else if (provEl.value === 'siliconflow') {
@@ -438,15 +475,35 @@
             }
         });
 
+        const readApiSettings = () => ({
+            provider: provEl.value,
+            apiKey: keyEl.value.trim(),
+            groupId: gidEl.value.trim(),
+            endpoint: epEl.value.trim(),
+            model: modelEl.value.trim()
+        });
+
         saveBtn.addEventListener('click', () => {
-            saveConfig({
-                provider: provEl.value,
-                apiKey: keyEl.value.trim(),
-                groupId: gidEl.value.trim(),
-                endpoint: epEl.value.trim(),
-                model: modelEl.value.trim()
-            });
-            if (typeof window.showToast === 'function') window.showToast('语音 API 设置已保存');
+            saveConfig(readApiSettings());
+            window.showToast?.('语音 API 设置已保存');
+        });
+
+        previewBtn.addEventListener('click', async () => {
+            const voiceId = previewVoice.value.trim();
+            if (!voiceId) {
+                window.showToast?.('请填写要试听的音色 ID');
+                return;
+            }
+            previewBtn.disabled = true;
+            previewBtn.textContent = '合成中…';
+            try {
+                await playVoiceForBubble(previewBtn, PREVIEW_TEXT, {
+                    voiceTts: { voiceId, provider: 'minimax' }
+                }, 'api_minimax_preview', { forceRegenerate: true, cfg: readApiSettings() });
+            } finally {
+                previewBtn.disabled = false;
+                previewBtn.textContent = '试听';
+            }
         });
     }
 
@@ -574,7 +631,7 @@
                 emotion: emo?.value || '',
                 stylePrefix: (sty?.value || '').trim()
             };
-            if (typeof window.saveData === 'function') await window.saveData();
+            await window.saveSingleChatFast(ch, 'private');
         };
 
         sw.addEventListener('change', persistCharVoice);
@@ -600,8 +657,7 @@
                 ? window.db.characters.find(c => c.id === currentChatId)
                 : null;
             if (!ch) return;
-            const sample = `算你还有点良心，咱俩这镜子结实着呢，摔不碎。`;
-            await playVoiceForBubble(testBtn, sample, ch, 'preview_' + ch.id, { forceRegenerate: true });
+            await playVoiceForBubble(testBtn, PREVIEW_TEXT, ch, 'preview_' + ch.id, { forceRegenerate: true });
         });
 
         syncCharVoiceUi();

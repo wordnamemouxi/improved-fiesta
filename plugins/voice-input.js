@@ -15,22 +15,16 @@
     window.__uwuVoiceInputLoaded = true;
 
     const CFG_KEY = 'uwu_voice_input_config';
-    let isRecording = false;
-    let recognition = null;
-    let mediaRecorder = null;
-    let mediaStream = null;
-    let audioChunks = [];
-
-    // 长按交互状态
+    let recordingSession = null;
     let holdActive = false;
     let holdCancelled = false;
     let holdStartY = 0;
     let holdStartTime = 0;
     let holdTimerId = null;
-    let cancelPendingRecording = false;
-    let browserTranscriptFinal = '';
-    let browserTranscriptInterim = '';
     let usingTouch = false;
+    let recordingDb = null;
+    let playingRecording = null;
+    let playbackRequest = 0;
 
     function loadConfig() {
         try {
@@ -279,278 +273,286 @@
         }
     }
 
-    const userAudioCache = new Map();
-
-    async function sendAsVoiceMessage(text, audioBlobUrl = '') {
-        const clean = (text || '').trim();
-        if (!clean) return;
-        const cfg = loadConfig();
-        if (cfg.sendAsText) {
-            const input = document.getElementById('message-input');
-            if (input) {
-                input.value = clean;
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.focus();
-            }
-            return;
+    function voiceRecordings() {
+        if (!recordingDb) {
+            recordingDb = new Dexie('uwu_voice_input_db');
+            recordingDb.version(1).stores({ recordings: '&id' });
         }
-        if (typeof currentChatId === 'undefined' || !window.db) return;
-        const isGroup = typeof currentChatType !== 'undefined' && currentChatType === 'group';
-        const chat = isGroup
-            ? (db.groups || []).find(g => g.id === currentChatId)
-            : (db.characters || []).find(c => c.id === currentChatId);
+        return recordingDb.table('recordings');
+    }
+
+    function getVoiceTarget() {
+        if (typeof currentChatId === 'undefined' || !currentChatId
+            || typeof currentChatType === 'undefined' || !['private', 'group'].includes(currentChatType)) return null;
+        return { id: currentChatId, type: currentChatType };
+    }
+
+    function findVoiceChat(target) {
+        const chats = target.type === 'group' ? window.db?.groups : window.db?.characters;
+        return chats?.find(chat => chat.id === target.id);
+    }
+
+    function isVoiceTargetOpen(target) {
+        return getVoiceTarget()?.id === target.id && currentChatType === target.type
+            && document.getElementById('chat-room-screen')?.classList.contains('active');
+    }
+
+    function fillVoiceDraft(text, focus = false) {
+        const input = document.getElementById('message-input');
+        if (!input || input.value.trim()) return false;
+        input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        if (focus) input.focus();
+        return true;
+    }
+
+    async function fillOrSendText(text, audio, target = getVoiceTarget(), cfg = loadConfig()) {
+        const clean = (text || '').trim();
+        if (!clean || !target) return;
+        const chat = findVoiceChat(target);
         if (!chat) return;
 
-        const myName = isGroup ? (chat.me?.nickname || '我') : (chat.myName || '我');
-        const voiceContent = `[${myName}的语音：${clean}]`;
-        const msgId = `msg_uvoice_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        const voiceMsg = {
-            id: msgId,
-            role: 'user',
-            content: voiceContent,
-            parts: [{ type: 'text', text: voiceContent }],
-            timestamp: Date.now()
-        };
-        if (audioBlobUrl) userAudioCache.set(msgId, audioBlobUrl);
+        if (cfg.sendAsText) {
+            if (isVoiceTargetOpen(target) && fillVoiceDraft(clean, true)) return;
+            chat.voiceInputDraft = [chat.voiceInputDraft, clean].filter(Boolean).join('\n');
+            await window.saveSingleChatFast(chat, target.type);
+            window.showToast?.('转写已保存到原会话的草稿');
+            return;
+        }
 
+        const myName = target.type === 'group' ? (chat.me?.nickname || '我') : (chat.myName || '我');
+        const content = `[${myName}的语音：${clean}]`;
+        const id = `msg_uvoice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const message = { id, role: 'user', content, parts: [{ type: 'text', text: content }], timestamp: Date.now() };
+        if (target.type === 'group') message.senderId = 'user_me';
+        if (audio?.size) {
+            try {
+                await voiceRecordings().put({ id, audio });
+                message.hasVoiceRecording = true;
+            } catch (error) {
+                console.warn('[VoiceInput] Recording save failed:', error);
+                window.showToast?.('录音保存失败，仍会保留转写文字');
+            }
+        }
+
+        if (findVoiceChat(target) !== chat) {
+            if (message.hasVoiceRecording) await voiceRecordings().delete(id);
+            return;
+        }
         chat.history ||= [];
-        chat.history.push(voiceMsg);
-        if (typeof window.addMessageBubble === 'function') {
-            window.addMessageBubble(voiceMsg, currentChatId, isGroup ? 'group' : 'private');
-        } else if (typeof window.renderMessages === 'function') {
-            window.renderMessages(false, true);
-        }
-        if (typeof window.saveData === 'function') await window.saveData();
-        if (typeof window.renderChatList === 'function') window.renderChatList();
-    }
-
-    function fillOrSendText(text, audioBlobUrl = '') {
-        return sendAsVoiceMessage(text, audioBlobUrl);
-    }
-
-    // 模式 A：浏览器内置实时语音识别（配合长按说话，支持实时预览）
-    function startBrowserRecognition() {
-        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SR) {
-            hideHoldOverlay();
-            holdActive = false;
-            if (typeof window.showToast === 'function') {
-                window.showToast('当前浏览器不支持内置语音识别，请在 API 设置切换为 Whisper 录音接口');
-            }
-            return;
-        }
-        const cfg = loadConfig();
-        browserTranscriptFinal = '';
-        browserTranscriptInterim = '';
-        cancelPendingRecording = false;
-
-        recognition = new SR();
-        recognition.lang = cfg.lang || 'zh-CN';
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 1;
-        recognition.continuous = true;
-
-        isRecording = true;
-        updateMicBtnState(true);
-
-        recognition.onresult = (event) => {
-            let fin = '';
-            let inter = '';
-            for (let i = 0; i < event.results.length; i++) {
-                const res = event.results[i];
-                const txt = res[0]?.transcript || '';
-                if (res.isFinal) fin += txt;
-                else inter += txt;
-            }
-            browserTranscriptFinal = fin;
-            browserTranscriptInterim = inter;
-            const previewEl = document.getElementById('uwu-vh-preview');
-            if (previewEl) previewEl.textContent = (fin + inter).trim().slice(-40);
-        };
-        recognition.onerror = (event) => {
-            isRecording = false;
-            updateMicBtnState(false);
-            const code = event?.error || 'unknown';
-            if (code === 'not-allowed') {
-                hideHoldOverlay();
-                holdActive = false;
-                if (typeof window.showToast === 'function') window.showToast('麦克风权限被拒绝，请在浏览器设置中允许麦克风');
-            } else if (code !== 'aborted' && code !== 'no-speech' && !cancelPendingRecording) {
-                if (typeof window.showToast === 'function') window.showToast(`语音识别失败 (${code})`);
-            }
-        };
-        recognition.onend = () => {
-            isRecording = false;
-            updateMicBtnState(false);
-            const finalText = (browserTranscriptFinal + browserTranscriptInterim).trim();
-            const wasCancelled = cancelPendingRecording;
-            recognition = null;
-            if (!wasCancelled) {
-                if (finalText) {
-                    fillOrSendText(finalText);
-                } else if (typeof window.showToast === 'function') {
-                    window.showToast('未识别到清晰语音');
-                }
-            }
-        };
+        chat.history.push(message);
         try {
-            recognition.start();
-        } catch (e) {
-            isRecording = false;
-            updateMicBtnState(false);
-            hideHoldOverlay();
-            holdActive = false;
+            await window.saveSingleChatFast(chat, target.type);
+        } catch (error) {
+            chat.history = chat.history.filter(item => item.id !== id);
+            if (message.hasVoiceRecording) {
+                await voiceRecordings().delete(id).catch(cleanupError => console.warn('[VoiceInput] Recording cleanup failed:', cleanupError));
+            }
+            throw error;
+        }
+        if (isVoiceTargetOpen(target) && !document.querySelector(`.message-wrapper[data-id="${id}"]`)) {
+            window.addMessageBubble?.(message, target.id, target.type);
+        }
+        window.renderChatList?.();
+    }
+
+    function restoreVoiceDraft() {
+        const target = getVoiceTarget();
+        if (!target || !isVoiceTargetOpen(target)) return;
+        const chat = findVoiceChat(target);
+        if (chat?.voiceInputDraft && fillVoiceDraft(chat.voiceInputDraft)) {
+            delete chat.voiceInputDraft;
+            window.saveSingleChatFast(chat, target.type).catch(error => console.warn('[VoiceInput] Draft save failed:', error));
         }
     }
 
-    // 模式 B：真实录音并调用 Whisper /v1/audio/transcriptions 接口转文字
-    async function startWhisperRecording() {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            hideHoldOverlay();
-            holdActive = false;
-            if (typeof window.showToast === 'function') window.showToast('当前环境不支持麦克风录音');
-            return;
-        }
-        const cfg = loadConfig();
-        const apiKey = (cfg.apiKey || window.db?.apiSettings?.key || '').trim();
-        if (!apiKey && !(cfg.endpoint || '').trim()) {
-            hideHoldOverlay();
-            holdActive = false;
-            if (typeof window.showToast === 'function') window.showToast('请先在 API 设置中填写 Whisper 语音识别 Key 或接口');
-            return;
-        }
+    function stopAudioCapture(session) {
+        if (session.recorder?.state === 'recording') session.recorder.stop();
+    }
 
-        cancelPendingRecording = false;
+    async function captureVoiceAudio(session) {
+        if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+            throw new Error('当前浏览器无法录制麦克风音频');
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            // 若在权限/设备初始化期间用户已经松手，立即释放麦克风并中止
-            if (!holdActive) {
-                try { stream.getTracks().forEach(t => t.stop()); } catch (e) {}
-                return;
-            }
-            mediaStream = stream;
-            const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
-                : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
-            mediaRecorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
-            audioChunks = [];
+            if (session.released) return null;
+            const mimeType = ['audio/webm', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported(type));
+            const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+            session.recorder = recorder;
+            const chunks = [];
+            return await new Promise((resolve, reject) => {
+                recorder.ondataavailable = event => {
+                    if (event.data?.size) chunks.push(event.data);
+                };
+                recorder.onstop = () => resolve(chunks.length
+                    ? new Blob(chunks, { type: recorder.mimeType || chunks[0].type || 'audio/webm' })
+                    : null);
+                recorder.onerror = event => reject(event.error || new Error('录音失败'));
+                recorder.start();
+            });
+        } finally {
+            for (const track of stream.getTracks()) track.stop();
+        }
+    }
 
-            mediaRecorder.ondataavailable = (e) => {
-                if (e.data && e.data.size > 0) audioChunks.push(e.data);
+    function releaseHold(session) {
+        session.released = true;
+        holdActive = false;
+        hideHoldOverlay();
+        stopAudioCapture(session);
+        updateMicBtnState(false, !session.cancelled);
+    }
+
+    function finishVoiceSession(session) {
+        if (recordingSession !== session) return;
+        if (!session.released) releaseHold(session);
+        recordingSession = null;
+        updateMicBtnState(false);
+    }
+
+    function startBrowserRecognition(session) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            window.showToast?.('当前浏览器不支持内置识别，请在 API 设置切换为 Whisper 录音接口');
+            finishVoiceSession(session);
+            return;
+        }
+
+        try {
+            const recognition = new SpeechRecognition();
+            session.recognition = recognition;
+            recognition.lang = session.cfg.lang || 'zh-CN';
+            recognition.interimResults = true;
+            recognition.maxAlternatives = 1;
+            recognition.continuous = true;
+
+            let transcript = '';
+            recognition.onresult = event => {
+                transcript = Array.from(event.results, result => result[0]?.transcript || '').join('').trim();
+                const preview = document.getElementById('uwu-vh-preview');
+                if (preview) preview.textContent = transcript.slice(-40);
             };
-
-            mediaRecorder.onstop = async () => {
-                try { if (mediaStream) mediaStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-                mediaStream = null;
-                isRecording = false;
-                const wasCancelled = cancelPendingRecording;
-                if (wasCancelled || !audioChunks.length) {
-                    updateMicBtnState(false, false);
-                    mediaRecorder = null;
-                    audioChunks = [];
-                    return;
-                }
-                updateMicBtnState(false, true);
+            recognition.onerror = event => {
+                if (session.cancelled || event.error === 'aborted' || event.error === 'no-speech') return;
+                session.cancelled = true;
+                window.showToast?.(event.error === 'not-allowed'
+                    ? '麦克风权限被拒绝，请在浏览器中允许使用麦克风'
+                    : `语音识别失败 (${event.error || 'unknown'})`);
+                releaseHold(session);
+            };
+            recognition.onend = async () => {
+                if (recordingSession !== session) return;
                 try {
-                    const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-                    const ext = (blob.type || '').includes('mp4') ? 'm4a' : 'webm';
-                    const form = new FormData();
-                    form.append('file', blob, `voice.${ext}`);
-                    form.append('model', (cfg.model || 'whisper-1').trim());
-                    if (cfg.lang && cfg.lang !== 'auto') {
-                        form.append('language', cfg.lang.split('-')[0]);
-                    }
-                    const baseEndpoint = (cfg.endpoint || '').trim()
-                        || ((window.db?.apiSettings?.url || '').replace(/\/$/, '') ? `${window.db.apiSettings.url.replace(/\/$/, '')}/v1/audio/transcriptions` : 'https://api.openai.com/v1/audio/transcriptions');
-                    const headers = {};
-                    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-                    const resp = await fetch(baseEndpoint, { method: 'POST', headers, body: form });
-                    if (!resp.ok) {
-                        const errTxt = await resp.text().catch(() => '');
-                        throw new Error(`转文字失败 (${resp.status}): ${errTxt.slice(0, 100)}`);
-                    }
-                    const data = await resp.json();
-                    const text = (data?.text || '').trim();
-                    const blobUrl = URL.createObjectURL(blob);
-                    if (text) await sendAsVoiceMessage(text, blobUrl);
-                    else if (typeof window.showToast === 'function') window.showToast('未识别出语音内容');
-                } catch (err) {
-                    console.error('[VoiceInput Whisper]', err);
-                    if (typeof window.showToast === 'function') window.showToast(err.message || '语音转文字失败');
+                    if (!session.released) releaseHold(session);
+                    const audio = await session.audio;
+                    if (session.cancelled) return;
+                    if (transcript) await fillOrSendText(transcript, audio, session.target, session.cfg);
+                    else window.showToast?.('未识别到清晰语音');
+                } catch (error) {
+                    console.error('[VoiceInput] Could not save speech:', error);
+                    window.showToast?.('语音消息保存失败');
                 } finally {
-                    updateMicBtnState(false, false);
-                    mediaRecorder = null;
-                    audioChunks = [];
+                    finishVoiceSession(session);
                 }
             };
+            recognition.start();
+            if (!session.cfg.sendAsText) {
+                session.audio = captureVoiceAudio(session).catch(error => {
+                    console.warn('[VoiceInput] Browser recording unavailable:', error);
+                    if (!session.cancelled) window.showToast?.('当前浏览器未保存原声，可用 Whisper 模式录制并保存原声');
+                    return null;
+                });
+            }
+        } catch (error) {
+            console.warn('[VoiceInput] Could not start speech recognition:', error);
+            finishVoiceSession(session);
+            window.showToast?.('无法开始语音识别');
+        }
+    }
 
-            mediaRecorder.start();
-            isRecording = true;
-            updateMicBtnState(true);
-        } catch (err) {
-            isRecording = false;
-            holdActive = false;
-            hideHoldOverlay();
-            updateMicBtnState(false);
-            if (typeof window.showToast === 'function') window.showToast('无法打开麦克风，请检查浏览器权限');
+    async function startWhisperRecording(session) {
+        const cfg = session.cfg;
+        const apiKey = (cfg.apiKey || window.db?.apiSettings?.key || '').trim();
+        const mainUrl = (window.db?.apiSettings?.url || '').replace(/\/$/, '');
+        const endpoint = (cfg.endpoint || '').trim()
+            || (mainUrl ? `${mainUrl}/v1/audio/transcriptions` : 'https://api.openai.com/v1/audio/transcriptions');
+        if (!apiKey && !(cfg.endpoint || '').trim()) {
+            finishVoiceSession(session);
+            window.showToast?.('请先在 API 设置中填写 Whisper 语音识别 Key 或接口');
+            return;
+        }
+
+        try {
+            const audio = await captureVoiceAudio(session);
+            if (!audio || session.cancelled) return;
+            const ext = audio.type.includes('mp4') ? 'm4a' : 'webm';
+            const form = new FormData();
+            form.append('file', audio, `voice.${ext}`);
+            form.append('model', (cfg.model || 'whisper-1').trim());
+            if (cfg.lang && cfg.lang !== 'auto') form.append('language', cfg.lang.split('-')[0]);
+            const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+            const response = await fetch(endpoint, { method: 'POST', headers, body: form });
+            if (!response.ok) throw new Error(`转文字失败 (HTTP ${response.status})`);
+            const data = await response.json();
+            const text = (data?.text || '').trim();
+            if (text) await fillOrSendText(text, audio, session.target, cfg);
+            else window.showToast?.('未识别出语音内容');
+        } catch (error) {
+            if (!session.cancelled) {
+                console.error('[VoiceInput Whisper]', error);
+                window.showToast?.(error.message || '语音转文字失败');
+            }
+        } finally {
+            finishVoiceSession(session);
         }
     }
 
     function startHoldRecording(clientY) {
-        if (holdActive) return;
+        if (recordingSession) return;
+        const target = getVoiceTarget();
+        if (!target || !findVoiceChat(target)) return;
+        const session = { target, cfg: loadConfig(), released: false, cancelled: false };
+        recordingSession = session;
         holdActive = true;
         holdCancelled = false;
-        cancelPendingRecording = false;
         holdStartY = clientY || 0;
         holdStartTime = Date.now();
-        try { if (navigator.vibrate) navigator.vibrate(18); } catch (e) {}
+        try { if (navigator.vibrate) navigator.vibrate(18); } catch (error) {}
         showHoldOverlay();
-        const cfg = loadConfig();
-        if (cfg.mode === 'whisper') {
-            startWhisperRecording();
-        } else {
-            startBrowserRecognition();
-        }
+        updateMicBtnState(true);
+        if (session.cfg.mode === 'whisper') startWhisperRecording(session);
+        else startBrowserRecognition(session);
     }
 
     function moveHoldRecording(clientY) {
         if (!holdActive) return;
-        const deltaUp = holdStartY - (clientY || 0);
-        const shouldCancel = deltaUp > 55;
+        const shouldCancel = holdStartY - (clientY || 0) > 55;
         if (shouldCancel !== holdCancelled) {
             holdCancelled = shouldCancel;
             setHoldOverlayCancelState(shouldCancel);
-            try { if (navigator.vibrate) navigator.vibrate(12); } catch (e) {}
+            try { if (navigator.vibrate) navigator.vibrate(12); } catch (error) {}
         }
     }
 
     function endHoldRecording(forceCancel = false) {
-        if (!holdActive) return;
-        holdActive = false;
-        hideHoldOverlay();
-        const elapsed = Date.now() - holdStartTime;
-        const tooShort = !forceCancel && !holdCancelled && elapsed < 450;
-        cancelPendingRecording = Boolean(forceCancel || holdCancelled || tooShort);
-
-        if (recognition) {
+        const session = recordingSession;
+        if (!holdActive || !session) return;
+        const tooShort = !forceCancel && !holdCancelled && Date.now() - holdStartTime < 450;
+        session.cancelled = forceCancel || holdCancelled || tooShort;
+        releaseHold(session);
+        if (session.recognition) {
             try {
-                if (cancelPendingRecording) recognition.abort();
-                else recognition.stop();
-            } catch (e) {}
+                if (session.cancelled) session.recognition.abort();
+                else session.recognition.stop();
+            } catch (error) {
+                finishVoiceSession(session);
+            }
         }
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-            try { mediaRecorder.stop(); } catch (e) {}
-        }
-        isRecording = false;
-        updateMicBtnState(false);
-
-        if (holdCancelled || forceCancel) {
-            if (typeof window.showToast === 'function') window.showToast('已取消发送');
-        } else if (tooShort) {
-            if (typeof window.showToast === 'function') window.showToast('按住说话、松开发送（说话时间太短）');
-        }
+        if (holdCancelled || forceCancel) window.showToast?.('已取消发送');
+        else if (tooShort) window.showToast?.('按住说话、松开发送（说话时间太短）');
     }
 
-    // 1. 注入聊天室底部左侧「麦克风」按钮（支持仿微信/QQ 长按说话、松开发送、上滑取消）
     function injectMicButton() {
         const expandBtn = document.getElementById('toggle-expansion-btn');
         const inputWrap = document.querySelector('#message-input-default .input-wrapper');
@@ -759,18 +761,53 @@
     }
 
 
-    if (!document.__uwuUserVoicePlayBound) {
-        document.__uwuUserVoicePlayBound = true;
-        document.addEventListener('click', (e) => {
-            const bubble = e.target?.closest?.('.message-wrapper.sent .voice-bubble');
-            if (!bubble) return;
-            const id = bubble.closest('.message-wrapper')?.dataset?.id;
-            const url = id ? userAudioCache.get(id) : '';
-            if (url) {
-                try { new Audio(url).play(); } catch (err) {}
-            }
-        });
+    if (typeof window.openChatRoom === 'function') {
+        const openChatRoom = window.openChatRoom;
+        window.openChatRoom = function () {
+            const result = openChatRoom.apply(this, arguments);
+            restoreVoiceDraft();
+            return result;
+        };
     }
+
+    function stopPlayingRecording() {
+        if (!playingRecording) return;
+        playingRecording.audio.pause();
+        URL.revokeObjectURL(playingRecording.url);
+        playingRecording = null;
+    }
+
+    document.addEventListener('click', async event => {
+        const bubble = event.target?.closest?.('.message-wrapper.sent .voice-bubble');
+        const id = bubble?.closest('.message-wrapper')?.dataset?.id;
+        if (!id?.startsWith('msg_uvoice_')) return;
+        const target = getVoiceTarget();
+        if (!target) return;
+        const request = ++playbackRequest;
+        const wasPlaying = playingRecording?.id === id;
+        stopPlayingRecording();
+        if (wasPlaying) return;
+        try {
+            const saved = await voiceRecordings().get(id);
+            if (request !== playbackRequest || !isVoiceTargetOpen(target)) return;
+            if (!saved?.audio) return;
+            const url = URL.createObjectURL(saved.audio);
+            const audio = new Audio(url);
+            playingRecording = { id, audio, url };
+            audio.onended = () => {
+                if (playingRecording?.audio === audio) stopPlayingRecording();
+            };
+            audio.onerror = () => {
+                if (playingRecording?.audio === audio) stopPlayingRecording();
+            };
+            await audio.play();
+        } catch (error) {
+            if (request === playbackRequest) {
+                stopPlayingRecording();
+                window.showToast?.('录音播放失败');
+            }
+        }
+    });
 
     function bootstrap() {
         injectStyle();

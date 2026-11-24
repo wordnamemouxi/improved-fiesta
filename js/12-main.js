@@ -77,7 +77,7 @@ const init = async () => {
     applyFontSize(db.fontSizeScale || 1.0);
     if (typeof applyThemeSettings === 'function') applyThemeSettings();
 
-    // 初始化各个模块（逐个 try/catch 隔离，防止任一模块异常阻断后续 setupPeekFeature 等初始化）
+    // 初始化各个模块（逐个 try/catch 隔离，防止任一模块异常阻断其余初始化）
     const safeRun = (name, fn) => {
         try {
             if (typeof fn === 'function') fn();
@@ -120,16 +120,6 @@ const init = async () => {
     try { setupTutorialApp(); } catch(e) { console.error("setupTutorialApp failed:", e); }
     
     try { checkForUpdates(); } catch(e) { console.error("checkForUpdates failed:", e); }
-    try {
-        if (typeof setupPeekFeature === 'function') {
-            setupPeekFeature();
-            window.__uwuPeekFeatureReady = true;
-        } else {
-            console.error("setupPeekFeature is undefined: js/09-peek-phone.js may not be loaded");
-        }
-    } catch(e) {
-        console.error("setupPeekFeature failed:", e);
-    }
     setupPeekDelegationFallback();
     try { setupMemoryJournalScreen(); } catch(e) { console.error("setupMemoryJournalScreen failed:", e); }
     try { setupDeleteHistoryChunk(); } catch(e) { console.error("setupDeleteHistoryChunk failed:", e); }
@@ -313,30 +303,60 @@ function showGlobalRescuePanel() {
     };
 }
 
-// === 查手机 & 动态入口兜底事件委托（防止 DOM 重建 / 早期初始化异常 / 09-peek-phone.js 未加载时无响应） ===
+// 首次打开私聊「查手机」时加载模块，失败后允许再次点击重试。
+let peekFeatureLoad = null;
+
+function loadPeekFeature() {
+    if (peekFeatureLoad) return peekFeatureLoad;
+
+    peekFeatureLoad = (async () => {
+        if (typeof setupPeekFeature !== 'function') {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = './js/09-peek-phone.js?v=20261121';
+                script.onload = resolve;
+                script.onerror = () => {
+                    script.remove();
+                    reject(new Error('查手机脚本下载失败'));
+                };
+                document.head.appendChild(script);
+            });
+        }
+
+        if (typeof setupPeekFeature !== 'function' || typeof renderPeekScreen !== 'function'
+            || typeof renderMomentsScreen !== 'function') {
+            throw new Error('查手机模块没有完成加载');
+        }
+        await setupPeekFeature();
+        window.__uwuPeekFeatureReady = true;
+    })().catch(error => {
+        peekFeatureLoad = null;
+        throw error;
+    });
+    return peekFeatureLoad;
+}
+
 function setupPeekDelegationFallback() {
-    if (document.__uwuPeekDelegationBound) return;
-    document.__uwuPeekDelegationBound = true;
-    document.addEventListener('click', (e) => {
-        const peekBtn = e.target && e.target.closest ? e.target.closest('#peek-btn') : null;
-        if (!peekBtn) return;
-        const isGroup = (typeof currentChatType !== 'undefined' && currentChatType === 'group');
-        if (isGroup) return;
-        const hasPrivateChar = (typeof currentChatId !== 'undefined' && currentChatId && typeof db !== 'undefined' && Array.isArray(db.characters) && db.characters.some(c => c.id === currentChatId));
-        if (typeof currentChatType !== 'undefined' && currentChatType !== 'private' && hasPrivateChar) {
-            currentChatType = 'private';
-        }
-        if (typeof currentChatType !== 'undefined' && currentChatType !== 'private') return;
-        if (typeof renderPeekScreen !== 'function' || typeof renderMomentsScreen !== 'function') {
-            if (typeof showToast === 'function') {
-                showToast('查手机模块 (js/09-peek-phone.js) 未加载成功，请检查 GitHub 的 js/ 文件夹是否已上传该文件');
+    let openRequest = 0;
+    document.addEventListener('click', async event => {
+        if (!event.target?.closest?.('#peek-btn') || currentChatType === 'group') return;
+        const chatId = currentChatId;
+        if (!db.characters.some(chat => chat.id === chatId)) return;
+        if (currentChatType !== 'private') currentChatType = 'private';
+
+        const request = ++openRequest;
+        if (!window.__uwuPeekFeatureReady) {
+            if (!peekFeatureLoad) showToast('正在加载查手机…');
+            try {
+                await loadPeekFeature();
+            } catch (error) {
+                if (request === openRequest) showToast('查手机加载失败，点击可重试');
+                console.warn('[Peek] Could not load phone module:', error);
+                return;
             }
-            console.error('[PeekFallback] js/09-peek-phone.js not loaded');
-            return;
         }
-        const sheet = document.getElementById('peek-actionsheet');
-        if (sheet && !sheet.classList.contains('visible')) {
-            sheet.classList.add('visible');
-        }
-    }, false);
+        if (request !== openRequest || currentChatId !== chatId || currentChatType !== 'private'
+            || !document.getElementById('chat-room-screen')?.classList.contains('active')) return;
+        document.getElementById('peek-actionsheet')?.classList.add('visible');
+    });
 }

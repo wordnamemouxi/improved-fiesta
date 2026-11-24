@@ -12,7 +12,7 @@
     if (window.__uwuOsNotifyLoaded) return;
     window.__uwuOsNotifyLoaded = true;
 
-    const OS_NOTIFY_KEY = 'uwu_os_notify_enabled';
+    const savingPreferenceIds = new Set();
     const lastNotifyDedup = new Map();
     let notifySeq = 0;
     let testNotifyInFlight = false;
@@ -187,7 +187,7 @@
     }
 
     async function showSystemNotification(chat, previewText, msgId = '') {
-        if (!chat || !previewText) return;
+        if (chat?.osNotifyEnabled !== true || !previewText) return;
         if (isWebPageInForeground()) return;
 
         const dedupKey = msgId ? `${chat.id}:id:${msgId}` : `${chat.id}:${previewText}`;
@@ -199,7 +199,6 @@
 
         try {
             if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-            if (localStorage.getItem(OS_NOTIFY_KEY) === '0') return;
             const uniqueTag = `uwu-msg-${chat.id}-${msgId || Date.now()}-${++notifySeq}`;
             const opts = {
                 body,
@@ -215,9 +214,9 @@
     }
 
     async function showSystemNotificationsIndividually(chat, previewItems) {
-        if (!chat || !Array.isArray(previewItems) || !previewItems.length) return;
+        if (chat?.osNotifyEnabled !== true || !previewItems?.length) return;
         for (let i = 0; i < previewItems.length; i++) {
-            if (isWebPageInForeground()) break;
+            if (chat.osNotifyEnabled !== true || isWebPageInForeground()) break;
             const item = previewItems[i];
             if (i > 0) {
                 const baseDelay = 1800 + Math.min((item.text || '').length * 45, 1600) + Math.floor(Math.random() * 800);
@@ -228,57 +227,57 @@
         }
     }
 
-    function getNotifyButtonState() {
-        if (typeof Notification === 'undefined') {
-            return { text: '浏览器不支持系统弹窗', disabled: true };
+    function getActiveCharacter() {
+        if (typeof currentChatId === 'undefined' || typeof currentChatType === 'undefined' || currentChatType !== 'private') {
+            return null;
         }
-        if (Notification.permission === 'granted' && localStorage.getItem(OS_NOTIFY_KEY) !== '0') {
-            return { text: '系统弹窗已开启（点此测试）', disabled: false };
-        }
-        if (Notification.permission === 'denied') {
-            return { text: '通知已被拦截（需去浏览器开启）', disabled: false };
-        }
-        return { text: '开启手机弹窗通知', disabled: false };
+        return window.db?.characters?.find(chat => chat.id === currentChatId) || null;
     }
 
-    async function requestAndTestNotification(statusCallback) {
-        if (testNotifyInFlight) return false;
+    async function requestAndTestNotification(chat) {
+        if (testNotifyInFlight || chat?.osNotifyEnabled !== true
+            || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
         testNotifyInFlight = true;
+        syncCharacterSettings();
         try {
-            if (typeof Notification === 'undefined') {
-                if (typeof window.showToast === 'function') window.showToast('当前浏览器不支持系统通知');
-                return false;
-            }
-            let perm = Notification.permission;
-            if (perm === 'default') {
-                perm = await Notification.requestPermission();
-            }
-            if (perm !== 'granted') {
-                if (typeof window.showToast === 'function') window.showToast('通知权限被拒绝，请在手机浏览器站点设置中允许通知');
-                return false;
-            }
-            localStorage.setItem(OS_NOTIFY_KEY, '1');
-            if (typeof statusCallback === 'function') statusCallback();
-            const ch = (typeof currentChatId !== 'undefined' && window.db?.characters)
-                ? window.db.characters.find(c => c.id === currentChatId)
-                : null;
-            const testTitle = ch ? (ch.remarkName || ch.realName || '某昔专线') : '某昔专线';
-            const opts = {
-                body: '测试成功：切出网页后收到消息将会逐条弹出通知！',
-                tag: `uwu-test-${Date.now()}`,
-                renotify: true,
-                data: { chatId: ch?.id || '' }
-            };
-            const res = await deliverNotificationSafe(testTitle, opts, ch?.id || '');
-            if (res.ok) {
-                if (typeof window.showToast === 'function') window.showToast('已发送测试系统通知，请看顶部横幅');
-                return true;
-            } else {
-                if (typeof window.showToast === 'function') window.showToast(`系统通知发送失败：${res.error || '请刷新页面后重试'}`);
-                return false;
-            }
+            const title = chat.remarkName || chat.realName || '某昔专线';
+            const result = await deliverNotificationSafe(title, {
+                body: '这是一条来自当前角色的测试通知。',
+                tag: `uwu-test-${chat.id}-${Date.now()}`,
+                data: { chatId: chat.id, chatType: 'private' }
+            }, chat.id);
+            window.showToast?.(result.ok ? '已发送测试通知' : `测试通知发送失败：${result.error || '请重试'}`);
         } finally {
             testNotifyInFlight = false;
+            syncCharacterSettings();
+        }
+    }
+
+    async function saveCharacterPreference(chat, enabled) {
+        if (!chat || savingPreferenceIds.has(chat.id)) return;
+        savingPreferenceIds.add(chat.id);
+        syncCharacterSettings();
+        const previous = chat.osNotifyEnabled;
+        try {
+            if (enabled) {
+                const permission = Notification.permission === 'default'
+                    ? await Notification.requestPermission()
+                    : Notification.permission;
+                if (permission !== 'granted') {
+                    window.showToast?.('请先在浏览器的站点设置中允许通知');
+                    return;
+                }
+            }
+            chat.osNotifyEnabled = enabled;
+            await window.saveSingleChatFast(chat, 'private');
+        } catch (error) {
+            if (previous === undefined) delete chat.osNotifyEnabled;
+            else chat.osNotifyEnabled = previous;
+            console.warn('[OsNotify] Could not save character notification preference:', error);
+            window.showToast?.('通知设置保存失败，请重试');
+        } finally {
+            savingPreferenceIds.delete(chat.id);
+            syncCharacterSettings();
         }
     }
 
@@ -289,11 +288,14 @@
         handleAiReplyHooked = true;
         const origHandle = window.handleAiReplyContent;
         const wrapped = async function (fullResponse, chat, targetChatId, targetChatType, isBackground = false) {
+            if (targetChatType !== 'private' || chat?.osNotifyEnabled !== true) {
+                return origHandle.apply(this, arguments);
+            }
             const beforeIds = new Set(
                 Array.isArray(chat?.history) ? chat.history.map(m => m && m.id).filter(Boolean) : []
             );
             const res = await origHandle.apply(this, arguments);
-            if (chat && !isWebPageInForeground()) {
+            if (chat.osNotifyEnabled === true && !isWebPageInForeground()) {
                 const addedMsgs = Array.isArray(chat.history)
                     ? chat.history.filter(m => m && (!m.id || !beforeIds.has(m.id)))
                     : [];
@@ -309,95 +311,64 @@
     }
 
     // 在 API 设置页注入「手机系统弹窗通知」全局开关
-    function injectApiNotifySwitch() {
-        const timeSw = document.getElementById('time-perception-switch');
-        if (!timeSw || document.getElementById('api-os-notify-switch')) return;
-        const timeItem = timeSw.closest('.kkt-item');
-        if (!timeItem || !timeItem.parentElement) return;
+    function syncCharacterSettings() {
+        const anchor = document.getElementById('setting-auto-reply-enabled')?.closest('.feature-card');
+        if (!anchor) return;
 
-        const item = document.createElement('div');
-        item.className = 'kkt-item';
-        item.id = 'api-os-notify-setting-row';
-        item.innerHTML = `
-            <div class="kkt-item-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-            </div>
-            <div class="kkt-item-content">
-                <div class="kkt-item-title">手机系统弹窗通知</div>
-                <div class="kkt-item-subtitle" id="api-os-notify-subtitle">切出网页时按条弹出角色消息通知</div>
-            </div>
-            <div class="kkt-item-control">
-                <label class="kkt-switch">
-                    <input type="checkbox" id="api-os-notify-switch">
-                    <span class="kkt-slider"></span>
-                </label>
-            </div>
-        `;
-        timeItem.parentElement.insertBefore(item, timeItem.nextSibling);
-
-        const sw = document.getElementById('api-os-notify-switch');
-        const sub = document.getElementById('api-os-notify-subtitle');
-        const syncApiSw = () => {
-            if (typeof Notification === 'undefined') {
-                sw.checked = false;
-                sw.disabled = true;
-                sub.textContent = '当前浏览器不支持系统级通知';
-                return;
-            }
-            const perm = Notification.permission;
-            const enabled = localStorage.getItem(OS_NOTIFY_KEY) !== '0';
-            sw.checked = (perm === 'granted' && enabled);
-            if (perm === 'denied') {
-                sub.textContent = '通知权限已被拦截，请在浏览器站点设置中允许通知';
-            } else if (sw.checked) {
-                sub.textContent = '已开启 · 仅在切出网页时逐条弹出角色通知';
-            } else {
-                sub.textContent = '开启后，切出网页或后台挂起时将收到系统弹窗通知';
-            }
-        };
-
-        sw.addEventListener('change', async () => {
-            if (sw.checked) {
-                const ok = await requestAndTestNotification(syncApiSw);
-                if (!ok) localStorage.setItem(OS_NOTIFY_KEY, '0');
-            } else {
-                localStorage.setItem(OS_NOTIFY_KEY, '0');
-                if (typeof window.showToast === 'function') window.showToast('已关闭手机系统弹窗通知');
-            }
-            syncApiSw();
-        });
-
-        const apiScreen = document.getElementById('api-settings-screen');
-        if (apiScreen && !apiScreen.__osNotifyObserved) {
-            apiScreen.__osNotifyObserved = true;
-            new MutationObserver(() => {
-                if (apiScreen.classList.contains('active')) syncApiSw();
-            }).observe(apiScreen, { attributes: true, attributeFilter: ['class'] });
+        let card = document.getElementById('os-notify-setting-card');
+        if (!card) {
+            card = document.createElement('div');
+            card.className = 'feature-card';
+            card.id = 'os-notify-setting-card';
+            card.innerHTML = `
+                <div class="feature-card-header">
+                    <div class="feature-card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9m-8 12a2 2 0 0 0 4 0"></path></svg>
+                    </div>
+                    <label class="kkt-switch">
+                        <input type="checkbox" id="setting-os-notify-enabled" aria-labelledby="setting-os-notify-title">
+                        <span class="kkt-slider"></span>
+                    </label>
+                </div>
+                <div class="feature-card-body">
+                    <div class="feature-card-title" id="setting-os-notify-title">新消息通知</div>
+                    <div class="feature-card-desc" id="setting-os-notify-status"></div>
+                    <button type="button" id="setting-os-notify-test" class="btn btn-small btn-secondary" style="margin:8px 0 0;padding:6px 8px;">测试通知</button>
+                </div>
+            `;
+            const smartCard = document.getElementById('smart-auto-reply-setting-row');
+            (smartCard || anchor).after(card);
+            card.querySelector('#setting-os-notify-enabled').addEventListener('change', event => {
+                saveCharacterPreference(getActiveCharacter(), event.target.checked);
+            });
+            card.querySelector('#setting-os-notify-test').addEventListener('click', () => {
+                requestAndTestNotification(getActiveCharacter());
+            });
         }
-        syncApiSw();
+
+        const chat = getActiveCharacter();
+        const enabled = chat?.osNotifyEnabled === true;
+        const permission = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
+        const saving = chat && savingPreferenceIds.has(chat.id);
+        const toggle = card.querySelector('#setting-os-notify-enabled');
+        toggle.checked = enabled;
+        toggle.disabled = !chat || saving || permission === 'unsupported';
+        card.querySelector('#setting-os-notify-test').disabled = !enabled || saving || testNotifyInFlight || permission !== 'granted';
+
+        let status = enabled ? '切到后台时提醒这个角色的新消息' : '为这个角色单独开启通知';
+        if (permission === 'unsupported') status = '当前浏览器不支持系统通知';
+        if (permission === 'denied') status = '请在浏览器站点设置中允许通知';
+        card.querySelector('#setting-os-notify-status').textContent = status;
     }
 
     function bootstrap() {
         hookHandleAiReplyContent();
-        injectApiNotifySwitch();
+        syncCharacterSettings();
     }
 
-    hookHandleAiReplyContent();
-
+    bootstrap();
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            bootstrap();
-            let tries = 0;
-            const timer = setInterval(() => {
-                tries++;
-                bootstrap();
-                if (document.getElementById('api-os-notify-switch') || tries >= 40) {
-                    clearInterval(timer);
-                }
-            }, 500);
-        });
-    } else {
-        bootstrap();
+        document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
     }
 
     if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
@@ -419,13 +390,12 @@
     } catch (e) {}
 
     window.OsNotifyPlugin = {
-        OS_NOTIFY_KEY,
         isWebPageInForeground,
         extractCleanPreview,
         extractMessagePreviewList,
         showSystemNotification,
         showSystemNotificationsIndividually,
-        getNotifyButtonState,
+        syncCharacterSettings,
         requestAndTestNotification,
         navigateToChatSafe,
         bootstrap

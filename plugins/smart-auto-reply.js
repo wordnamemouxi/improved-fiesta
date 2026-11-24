@@ -20,7 +20,7 @@
                 const curSrc = document.currentScript?.src || '';
                 const base = curSrc ? curSrc.replace(/[^/]+$/, '') : './plugins/';
                 const sc = document.createElement('script');
-                sc.src = `${base}os-notify.js?v=20261123`;
+                sc.src = `${base}os-notify.js?v=20261124`;
                 sc.async = false;
                 sc.onload = () => {
                     try { syncUiFromChar(); } catch (e) {}
@@ -334,31 +334,7 @@
     }
 
     function syncUiFromChar() {
-        const notifyBtn = document.getElementById('uwu-os-notify-btn');
-        const refreshNotifyBtn = () => {
-            if (!notifyBtn) return;
-            if (window.OsNotifyPlugin && typeof window.OsNotifyPlugin.getNotifyButtonState === 'function') {
-                const st = window.OsNotifyPlugin.getNotifyButtonState();
-                notifyBtn.textContent = st.text;
-                notifyBtn.disabled = Boolean(st.disabled);
-            } else {
-                notifyBtn.textContent = '开启手机弹窗通知';
-            }
-        };
-        if (notifyBtn) {
-            if (!notifyBtn.dataset.uwuBound) {
-                notifyBtn.dataset.uwuBound = '1';
-                notifyBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    if (window.OsNotifyPlugin && typeof window.OsNotifyPlugin.requestAndTestNotification === 'function') {
-                        window.OsNotifyPlugin.requestAndTestNotification(refreshNotifyBtn);
-                    } else if (typeof window.showToast === 'function') {
-                        window.showToast('通知模块 (plugins/os-notify.js) 未加载，请确认已上传该文件');
-                    }
-                });
-            }
-            refreshNotifyBtn();
-        }
+        window.OsNotifyPlugin?.syncCharacterSettings?.();
         const test30Btn = document.getElementById('uwu-test-30s-btn');
         if (test30Btn) {
             if (!test30Btn.dataset.uwuBound) {
@@ -435,7 +411,6 @@
                     <div class="feature-card-title">智慧主动消息</div>
                     <div class="feature-card-desc" id="smart-auto-reply-status">关闭 · 仅用原版固定间隔</div>
                     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">
-                        <button type="button" id="uwu-os-notify-btn" style="font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid #d0d7de;background:#fff;cursor:pointer;color:#333;">开启手机弹窗通知</button>
                         <button type="button" id="uwu-test-30s-btn" style="font-size:11px;padding:4px 8px;border-radius:6px;border:1px solid #d0d7de;background:#fff;cursor:pointer;color:#333;">30秒后测试自动发消息</button>
                     </div>
                 </div>

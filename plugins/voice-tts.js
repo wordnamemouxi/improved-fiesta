@@ -365,7 +365,7 @@
         box.id = 'api-voice-tts-section';
         box.innerHTML = `
             <div class="kkt-item" style="flex-direction:column;align-items:stretch;gap:8px;width:100%;box-sizing:border-box;overflow:hidden;">
-                <div class="kkt-item-title">专属克隆语音 API（点语音条合成）</div>
+                <div class="kkt-item-title">角色语音合成</div>
                 <select id="uwu-tts-provider" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:13px;">
                     <option value="siliconflow">硅基流动 (SiliconFlow)</option>
                     <option value="fish">Fish Audio</option>
@@ -384,7 +384,9 @@
                 <button type="button" id="uwu-tts-save-api-btn" class="btn btn-primary" style="width:100%;box-sizing:border-box;padding:8px 12px;font-size:13px;">保存语音 API 设置</button>
             </div>
         `;
-        group.parentElement.insertBefore(box, group.nextSibling);
+        const slot = document.getElementById('api-tts-settings-slot');
+        if (slot) slot.appendChild(box);
+        else group.parentElement.insertBefore(box, group.nextSibling);
 
         const provEl = document.getElementById('uwu-tts-provider');
         const keyEl = document.getElementById('uwu-tts-apikey');

@@ -14212,6 +14212,239 @@ textarea.mp-transparent-input {
     
 
     <script src="./js/01-vendor-mid.js?v=20261121"></script>
+
+    <style>
+#api-settings-screen {
+    --api-card-bg: var(--panel-bg, #fff);
+    --api-border: #e3e7eb;
+    --api-muted: #59636e;
+    background-color: #f5f7f9;
+    color: var(--text-color, #2a3032);
+}
+
+#api-settings-screen > .content {
+    min-height: 0;
+    padding: 14px 14px 20px;
+}
+
+#api-settings-screen .api-settings-layout {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 0;
+}
+
+#api-form {
+    display: grid;
+    gap: 10px;
+}
+
+#api-settings-screen .api-primary-card,
+#api-settings-screen .api-settings-fold {
+    min-width: 0;
+    background: var(--api-card-bg);
+    border: 1px solid var(--api-border);
+    border-radius: 14px;
+}
+
+#api-settings-screen .api-primary-card {
+    padding: 14px;
+}
+
+#api-settings-screen .api-primary-card h2 {
+    margin: 0 0 12px;
+    font-size: calc(17px * var(--app-font-scale, 1));
+    font-weight: 650;
+}
+
+#api-settings-screen .api-main-fields,
+#api-settings-screen .api-preset-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+#api-settings-screen .api-field,
+#api-settings-screen .api-preset-controls {
+    display: grid;
+    min-width: 0;
+    gap: 6px;
+}
+
+#api-settings-screen .api-field label,
+#api-settings-screen .api-preset-controls > label {
+    font-size: calc(13px * var(--app-font-scale, 1));
+    font-weight: 600;
+}
+
+#api-settings-screen .api-primary-card select,
+#api-settings-screen .api-primary-card input,
+#api-settings-screen #memory-api-panel input:not([type="checkbox"]),
+#api-settings-screen #memory-api-panel select {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 8px 10px;
+    border: 1px solid var(--api-border);
+    border-radius: 9px;
+    background: var(--api-card-bg);
+    color: inherit;
+    font: inherit;
+    font-size: calc(15px * var(--app-font-scale, 1));
+}
+
+#api-settings-screen .api-inline-controls {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+}
+
+#api-settings-screen .api-inline-controls select {
+    flex: 1;
+}
+
+#api-settings-screen .api-inline-controls .btn,
+#api-settings-screen #memory-fetch-models-btn {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 44px;
+    margin: 0;
+    padding: 8px 12px;
+    white-space: nowrap;
+}
+
+#api-settings-screen .api-preset-controls {
+    border-top: 1px solid var(--api-border);
+    margin-top: 13px;
+    padding-top: 12px;
+}
+
+#api-settings-screen .api-preset-tools > summary {
+    padding: 10px 0;
+    cursor: pointer;
+    font-size: calc(13px * var(--app-font-scale, 1));
+    color: var(--api-muted);
+}
+
+#api-settings-screen .api-preset-buttons > .btn {
+    min-height: 42px;
+    margin: 0;
+    padding: 8px;
+}
+
+#api-settings-screen .api-settings-fold > summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 12px;
+    align-items: center;
+    gap: 4px 12px;
+    min-height: 60px;
+    padding: 10px 14px;
+    list-style: none;
+    cursor: pointer;
+}
+
+#api-settings-screen .api-settings-fold > summary::-webkit-details-marker {
+    display: none;
+}
+
+#api-settings-screen .api-settings-fold > summary::after {
+    content: "";
+    grid-area: 1 / 2 / 3 / 3;
+    width: 7px;
+    height: 7px;
+    border: solid var(--api-muted);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+    justify-self: center;
+}
+
+#api-settings-screen .api-settings-fold[open] > summary::after {
+    transform: rotate(225deg);
+}
+
+#api-settings-screen .api-fold-title {
+    font-size: calc(15px * var(--app-font-scale, 1));
+    font-weight: 650;
+}
+
+#api-settings-screen .api-fold-description {
+    grid-column: 1;
+    color: var(--api-muted);
+    font-size: calc(12px * var(--app-font-scale, 1));
+    line-height: 1.45;
+}
+
+#api-settings-screen .api-fold-content {
+    border-top: 1px solid var(--api-border);
+}
+
+#api-settings-screen .api-fold-content .kkt-group {
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+#api-settings-screen .api-fold-content .kkt-item {
+    padding: 12px 14px;
+}
+
+#api-settings-screen .api-fold-content .kkt-item-icon {
+    margin-right: 10px;
+}
+
+#api-settings-screen .api-voice-slot + .api-voice-slot:not(:empty) {
+    border-top: 1px solid var(--api-border);
+}
+
+#api-settings-screen #memory-api-panel > .kkt-item:not([hidden]) {
+    display: grid;
+    gap: 6px;
+}
+
+#api-settings-screen #memory-api-panel .kkt-item-control {
+    min-width: 0;
+}
+
+#api-settings-screen .api-settings-footer {
+    flex: 0 0 auto;
+    padding: 8px 14px max(8px, env(safe-area-inset-bottom));
+    background: var(--api-card-bg);
+    border-top: 1px solid var(--api-border);
+}
+
+#api-settings-screen .api-settings-footer > .btn {
+    display: block;
+    width: 100%;
+    max-width: 720px;
+    min-height: 46px;
+    margin: 0 auto;
+}
+
+#api-settings-screen summary:focus-visible,
+#api-settings-screen .api-primary-card :is(input, select):focus-visible {
+    outline: 2px solid #486680;
+    outline-offset: 2px;
+}
+
+#api-settings-screen [hidden] {
+    display: none;
+}
+
+@media (max-width: 560px) {
+    #api-settings-screen .api-wide-field {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 360px) {
+    #api-settings-screen .api-main-fields {
+        grid-template-columns: 1fr;
+    }
+}
+    </style>
 </head>
 
 <body>
@@ -14503,356 +14736,337 @@ textarea.mp-transparent-input {
             <div class="placeholder"></div>
         </header>
         <main class="content">
-            <div class="kkt-settings-container">
+            <div class="kkt-settings-container api-settings-layout">
                 <form id="api-form">
-                    <!-- 基础配置 -->
-                    <div class="kkt-group">
-                        <div class="kkt-item">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">服务商</div>
-                                <div class="kkt-item-subtitle">选择提供 API 服务的平台</div>
-                            </div>
-                            <div class="kkt-item-control">
-                                <select id="api-provider" name="provider" style="border:none; background:transparent; text-align:right; direction: rtl; appearance: none; -webkit-appearance: none; padding-right: 15px; font-size: 14px;">
+                    <section class="api-primary-card" aria-labelledby="api-main-title">
+                        <h2 id="api-main-title">主 API</h2>
+                        <div class="api-main-fields">
+                            <div class="api-field">
+                                <label for="api-provider">服务商</label>
+                                <select id="api-provider" name="provider">
                                     <option value="newapi">NewAPI (自定义)</option>
                                     <option value="deepseek">DeepSeek</option>
                                     <option value="claude">Claude</option>
                                     <option value="gemini">Gemini</option>
                                 </select>
-                                <span class="kkt-arrow">›</span>
                             </div>
-                        </div>
-                        <div class="kkt-item">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">API 地址</div>
-                                <div class="kkt-item-subtitle">Base URL (如 https://api.openai.com)</div>
-                            </div>
-                            <div class="kkt-item-control" style="flex: 1; max-width: 50%;">
-                                <input type="text" id="api-url" name="url" autocomplete="off" placeholder="https://..." style="text-align:right; border:none; background:transparent; width: 100%; font-size: 14px;">
-                            </div>
-                        </div>
-                        <div class="kkt-item">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">密钥 (Key)</div>
-                                <div class="kkt-item-subtitle">API 访问凭证 (sk-...)</div>
-                            </div>
-                            <div class="kkt-item-control" style="flex: 1; max-width: 50%;">
-                                <input type="password" id="api-key" name="key" autocomplete="new-password" placeholder="sk-..." style="text-align:right; border:none; background:transparent; width: 100%; font-size: 14px;">
-                            </div>
-                        </div>
-                    </div>
-    
-                    <!-- 模型配置 -->
-                    <div class="kkt-group">
-                         <div class="kkt-item">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">模型列表</div>
-                                <div class="kkt-item-subtitle">从服务器获取可用模型</div>
-                            </div>
-                            <div class="kkt-item-control">
-                                <button type="button" class="btn btn-small btn-secondary" id="fetch-models-btn" style="margin:0; padding: 6px 12px; border-radius: 20px;">
-                                    <span class="btn-text">拉取</span>
-                                    <div class="spinner"></div>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="kkt-item">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">选择模型</div>
-                                <div class="kkt-item-subtitle">当前使用的对话模型</div>
-                            </div>
-                            <div class="kkt-item-control">
-                                <select id="api-model" name="model" style="border:none; background:transparent; text-align:right; direction: rtl; max-width: 180px; appearance: none; -webkit-appearance: none; padding-right: 15px; font-size: 14px;">
-                                    <option value="">请先拉取</option>
-                                </select>
-                                <span class="kkt-arrow">›</span>
-                            </div>
-                        </div>
-                    </div>
-    
-                    <!-- 高级设置 -->
-                    <div class="kkt-group">
-                        <div class="kkt-item">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">时间感知加强</div>
-                                <div class="kkt-item-subtitle">让 AI 知道当前真实时间</div>
-                            </div>
-                            <div class="kkt-item-control">
-                                <label class="kkt-switch">
-                                    <input type="checkbox" id="time-perception-switch">
-                                    <span class="kkt-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="kkt-item">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">流式输出</div>
-                                <div class="kkt-item-subtitle">打字机效果逐字显示回复</div>
-                            </div>
-                            <div class="kkt-item-control">
-                                <label class="kkt-switch">
-                                    <input type="checkbox" id="stream-switch">
-                                    <span class="kkt-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="kkt-item">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">持续运行增强</div>
-                                <div class="kkt-item-subtitle">提高 iOS/Android 后台存活率，系统仍可能暂停网页</div>
-                                <div class="kkt-item-subtitle" id="keep-alive-status" data-state="off">未开启</div>
-                            </div>
-                            <div class="kkt-item-control">
-                                <label class="kkt-switch">
-                                    <input type="checkbox" id="keep-alive-switch">
-                                    <span class="kkt-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        <div class="kkt-item" style="flex-direction: column; align-items: stretch; padding-bottom: 20px;">
-                            <div style="display: flex; align-items: center; margin-bottom: 12px;">
-                                <div class="kkt-item-icon">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
-                                </div>
-                                <div class="kkt-item-content">
-                                    <div class="kkt-item-title">温度</div>
-                                    <div class="kkt-item-subtitle">数值越大思维越活跃，越小越严谨</div>
-                                </div>
-                                <label class="kkt-switch" style="margin-right: 10px;">
-                                    <input type="checkbox" id="temperature-enabled-switch">
-                                    <span class="kkt-slider"></span>
-                                </label>
-                                <span id="temperature-value" style="color: var(--primary-color); font-weight: bold; font-size: 16px;">1.0</span>
-                            </div>
-                            <input type="range" id="temperature-slider" min="0" max="2" step="0.1" value="1.0" style="width: 100%; accent-color: var(--primary-color); margin-top: 8px;">
-                        </div>
-                    </div>
-
-                    <div class="kkt-group" id="api-lively-settings-group" style="margin-top: 16px;">
-                        <div class="kkt-item">
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">活人感强化（去书面语尾注）</div>
-                                <div class="kkt-item-subtitle">在发送末尾注入实时口语锚点，压制翻译腔、小作文和客服语气</div>
-                            </div>
-                            <div class="kkt-item-control">
-                                <select id="lively-mode-select" style="border:none;background:transparent;text-align:right;font-size:14px;color:var(--primary-color);font-weight:600;">
-                                    <option value="off">关闭</option>
-                                    <option value="natural">自然日常（推荐）</option>
-                                    <option value="vivid">极致微信活人</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="kkt-item" style="flex-direction: column; align-items: stretch;">
-                            <div style="display: flex; align-items: center; width: 100%;">
-                                <div class="kkt-item-content">
-                                    <div class="kkt-item-title">Top-P（核采样）</div>
-                                    <div class="kkt-item-subtitle">开启后生效，适度放宽（0.9–0.98）用词更鲜活</div>
-                                </div>
-                                <label class="kkt-switch" style="margin-right: 10px;">
-                                    <input type="checkbox" id="top-p-enabled-switch">
-                                    <span class="kkt-slider"></span>
-                                </label>
-                                <span id="top-p-value" style="color: var(--primary-color); font-weight: bold; font-size: 15px;">0.95</span>
-                            </div>
-                            <input type="range" id="top-p-slider" min="0.1" max="1" step="0.05" value="0.95" style="width: 100%; accent-color: var(--primary-color); margin-top: 8px;">
-                        </div>
-                        <div class="kkt-item" style="flex-direction: column; align-items: stretch;">
-                            <div style="display: flex; align-items: center; width: 100%;">
-                                <div class="kkt-item-content">
-                                    <div class="kkt-item-title">话题新鲜度（Presence Penalty）</div>
-                                    <div class="kkt-item-subtitle">建议 0.2–0.5，减少反复套话、更爱抛新话题（OpenAI 兼容接口生效）</div>
-                                </div>
-                                <label class="kkt-switch" style="margin-right: 10px;">
-                                    <input type="checkbox" id="presence-penalty-enabled-switch">
-                                    <span class="kkt-slider"></span>
-                                </label>
-                                <span id="presence-penalty-value" style="color: var(--primary-color); font-weight: bold; font-size: 15px;">0.3</span>
-                            </div>
-                            <input type="range" id="presence-penalty-slider" min="-2" max="2" step="0.1" value="0.3" style="width: 100%; accent-color: var(--primary-color); margin-top: 8px;">
-                        </div>
-                        <div class="kkt-item" style="flex-direction: column; align-items: stretch;">
-                            <div style="display: flex; align-items: center; width: 100%;">
-                                <div class="kkt-item-content">
-                                    <div class="kkt-item-title">防复读（Frequency Penalty）</div>
-                                    <div class="kkt-item-subtitle">建议 0.2–0.5，压制重复书面句式与口头禅（OpenAI 兼容接口生效）</div>
-                                </div>
-                                <label class="kkt-switch" style="margin-right: 10px;">
-                                    <input type="checkbox" id="frequency-penalty-enabled-switch">
-                                    <span class="kkt-slider"></span>
-                                </label>
-                                <span id="frequency-penalty-value" style="color: var(--primary-color); font-weight: bold; font-size: 15px;">0.3</span>
-                            </div>
-                            <input type="range" id="frequency-penalty-slider" min="-2" max="2" step="0.1" value="0.3" style="width: 100%; accent-color: var(--primary-color); margin-top: 8px;">
-                        </div>
-                    </div>
-
-                    <div class="kkt-group" style="margin-top: 16px;">
-                        <div class="kkt-item">
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">启用副 API</div>
-                                <div class="kkt-item-subtitle">只接管下方勾选的辅助功能，主聊天不受影响</div>
-                            </div>
-                            <div class="kkt-item-control">
-                                <label class="kkt-switch">
-                                    <input type="checkbox" id="secondary-api-enabled">
-                                    <span class="kkt-slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        <div id="secondary-api-panel">
-                            <div class="kkt-item">
-                                <div class="kkt-item-content"><div class="kkt-item-title">副 API 服务商</div></div>
-                                <div class="kkt-item-control">
-                                    <select id="secondary-api-provider" style="border:none;background:transparent;text-align:right;direction:rtl;appearance:none;padding-right:15px;font-size:14px;">
-                                        <option value="newapi">NewAPI (自定义)</option>
-                                        <option value="deepseek">DeepSeek</option>
-                                        <option value="claude">Claude</option>
-                                        <option value="gemini">Gemini</option>
+                            <div class="api-field">
+                                <label for="api-model">对话模型</label>
+                                <div class="api-inline-controls">
+                                    <select id="api-model" name="model">
+                                        <option value="">请先拉取</option>
                                     </select>
+                                    <button type="button" class="btn btn-small btn-secondary" id="fetch-models-btn">
+                                        <span class="btn-text">拉取</span>
+                                        <div class="spinner"></div>
+                                    </button>
                                 </div>
                             </div>
-                            <div class="kkt-item">
-                                <div class="kkt-item-content">
-                                    <div class="kkt-item-title">副 API 地址</div>
-                                    <div class="kkt-item-subtitle">Base URL</div>
-                                </div>
-                                <div class="kkt-item-control" style="flex:1;max-width:55%;">
-                                    <input type="text" id="secondary-api-url" autocomplete="off" placeholder="https://..." style="text-align:right;border:none;background:transparent;width:100%;font-size:14px;">
-                                </div>
+                            <div class="api-field api-wide-field">
+                                <label for="api-url">API 地址</label>
+                                <input type="text" id="api-url" name="url" autocomplete="off" placeholder="https://..." inputmode="url" autocapitalize="off" spellcheck="false">
                             </div>
-                            <div class="kkt-item">
-                                <div class="kkt-item-content"><div class="kkt-item-title">副 API 密钥</div></div>
-                                <div class="kkt-item-control" style="flex:1;max-width:55%;">
-                                    <input type="password" id="secondary-api-key" autocomplete="new-password" placeholder="sk-..." style="text-align:right;border:none;background:transparent;width:100%;font-size:14px;">
-                                </div>
-                            </div>
-                            <div class="kkt-item">
-                                <div class="kkt-item-content"><div class="kkt-item-title">副 API 模型</div></div>
-                                <div class="kkt-item-control" style="display:flex;gap:8px;max-width:60%;">
-                                    <select id="secondary-api-model" style="min-width:0;max-width:180px;border:none;background:transparent;font-size:14px;"><option value="">请先拉取模型</option></select>
-                                    <button type="button" id="secondary-fetch-models-btn" class="btn btn-secondary" style="width:auto;padding:7px 10px;">拉取</button>
-                                </div>
-                            </div>
-                            <div class="kkt-item" style="display:block;padding-top:14px;padding-bottom:14px;">
-                                <div class="kkt-item-title" style="margin-bottom:4px;">使用副 API 的功能</div>
-                                <div class="kkt-item-subtitle" style="margin-bottom:12px;">生图提示词由工坊独立 API 负责，不在此列表中</div>
-                                <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;">
-                                    <label><input type="checkbox" data-secondary-route="callReply"> 通话回复</label>
-                                    <label><input type="checkbox" data-secondary-route="callSummary"> 通话总结</label>
-                                    <label><input type="checkbox" data-secondary-route="journal"> 回忆日记</label>
-                                    <label><input type="checkbox" data-secondary-route="peek"> 偷看手机</label>
-                                    <label><input type="checkbox" data-secondary-route="shop"> 商城生成</label>
-                                    <label><input type="checkbox" data-secondary-route="batteryReminder"> 低电量提醒</label>
-                                </div>
+                            <div class="api-field api-wide-field">
+                                <label for="api-key">API 密钥</label>
+                                <input type="password" id="api-key" name="key" autocomplete="new-password" placeholder="sk-...">
                             </div>
                         </div>
-                    </div>
-
-                    <div class="kkt-group" style="margin-top: 16px;">
-                        <div class="kkt-item">
-                            <div class="kkt-item-content">
-                                <label class="kkt-item-title" for="memory-api-enabled">长期记忆整理独立 API</label>
-                                <div class="kkt-item-subtitle">用于生成待审核的记忆候选。关闭时沿用该角色的聊天 API。</div>
-                            </div>
-                            <label class="kkt-switch">
-                                <input type="checkbox" id="memory-api-enabled">
-                                <span class="kkt-slider"></span>
-                            </label>
-                        </div>
-                        <div id="memory-api-panel" hidden>
-                            <div class="kkt-item">
-                                <label class="kkt-item-title" for="memory-api-provider">记忆 API 服务商</label>
-                                <select id="memory-api-provider">
-                                    <option value="newapi">OpenAI 兼容（自定义）</option>
-                                    <option value="deepseek">DeepSeek</option>
-                                    <option value="gemini">Gemini</option>
+                        <div class="api-preset-controls">
+                            <label for="api-preset-select">常用预设</label>
+                            <div class="api-inline-controls">
+                                <select id="api-preset-select">
+                                    <option value="">选择预设</option>
                                 </select>
+                                <button type="button" id="api-apply-preset" class="btn btn-secondary">应用</button>
                             </div>
-                            <div class="kkt-item">
-                                <label class="kkt-item-title" for="memory-api-url">记忆 API 地址</label>
-                                <input id="memory-api-url" type="text" autocomplete="off" placeholder="https://…">
-                            </div>
-                            <div class="kkt-item">
-                                <label class="kkt-item-title" for="memory-api-key">记忆 API 密钥</label>
-                                <input id="memory-api-key" type="password" autocomplete="new-password" placeholder="sk-…">
-                            </div>
-                            <div class="kkt-item">
-                                <label class="kkt-item-title" for="memory-api-model">记忆 API 模型</label>
-                                <div class="kkt-item-control">
-                                    <input id="memory-api-model" type="text" list="memory-api-models" autocomplete="off" placeholder="填写或下方选择模型 ID">
-                                    <datalist id="memory-api-models"></datalist>
-                                    <button type="button" id="memory-fetch-models-btn" class="btn btn-secondary">拉取</button>
+                            <details class="api-preset-tools">
+                                <summary>管理预设</summary>
+                                <div class="api-preset-buttons">
+                                    <button type="button" id="api-save-preset" class="btn btn-secondary">另存为</button>
+                                    <button type="button" id="api-manage-presets" class="btn btn-secondary">查看与编辑</button>
+                                    <button type="button" id="api-import-presets" class="btn btn-neutral">导入</button>
+                                    <button type="button" id="api-export-presets" class="btn btn-neutral">导出</button>
+                                </div>
+                            </details>
+                        </div>
+                    </section>
+
+                    <details class="api-settings-fold" id="api-chat-settings">
+                        <summary>
+                            <span class="api-fold-title">聊天与后台</span>
+                            <span class="api-fold-description">时间感知、流式输出、持续运行</span>
+                        </summary>
+                        <div class="api-fold-content">
+                            <div class="kkt-group">
+                                <div class="kkt-item">
+                                    <div class="kkt-item-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                                    </div>
+                                    <div class="kkt-item-content">
+                                        <div class="kkt-item-title">时间感知加强</div>
+                                        <div class="kkt-item-subtitle">让 AI 知道当前真实时间</div>
+                                    </div>
+                                    <div class="kkt-item-control">
+                                        <label class="kkt-switch">
+                                            <input type="checkbox" id="time-perception-switch">
+                                            <span class="kkt-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="kkt-item">
+                                    <div class="kkt-item-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                                    </div>
+                                    <div class="kkt-item-content">
+                                        <div class="kkt-item-title">流式输出</div>
+                                        <div class="kkt-item-subtitle">打字机效果逐字显示回复</div>
+                                    </div>
+                                    <div class="kkt-item-control">
+                                        <label class="kkt-switch">
+                                            <input type="checkbox" id="stream-switch">
+                                            <span class="kkt-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="kkt-item">
+                                    <div class="kkt-item-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                                    </div>
+                                    <div class="kkt-item-content">
+                                        <div class="kkt-item-title">持续运行增强</div>
+                                        <div class="kkt-item-subtitle">提高 iOS/Android 后台存活率，系统仍可能暂停网页</div>
+                                        <div class="kkt-item-subtitle" id="keep-alive-status" data-state="off">未开启</div>
+                                    </div>
+                                    <div class="kkt-item-control">
+                                        <label class="kkt-switch">
+                                            <input type="checkbox" id="keep-alive-switch">
+                                            <span class="kkt-slider"></span>
+                                        </label>
+                                    </div>
                                 </div>
                             </div>
-                            <div class="kkt-item" id="memory-api-model-select-row" hidden>
-                                <label class="kkt-item-title" for="memory-api-model-select">选择已拉取模型</label>
-                                <select id="memory-api-model-select"></select>
-                            </div>
                         </div>
-                        <div class="kkt-item">
-                            <button type="button" id="memory-save-api-btn" class="btn btn-secondary">保存记忆 API</button>
-                        </div>
-                    </div>
+                    </details>
 
-                    <button type="submit" class="btn btn-primary" id="save-btn" style="margin-top: 20px; width: 100%;">
-                        <span class="btn-text">保存设置</span>
-                        <div class="spinner"></div>
-                    </button>
+                    <details class="api-settings-fold" id="api-reply-settings">
+                        <summary>
+                            <span class="api-fold-title">回复风格与采样</span>
+                            <span class="api-fold-description">活人感、温度、Top-P 和重复惩罚</span>
+                        </summary>
+                        <div class="api-fold-content">
+                            <div class="kkt-group" id="api-lively-settings-group">
+                                <div class="kkt-item">
+                                    <div class="kkt-item-content">
+                                        <div class="kkt-item-title">活人感强化（去书面语尾注）</div>
+                                        <div class="kkt-item-subtitle">在发送末尾注入实时口语锚点，压制翻译腔、小作文和客服语气</div>
+                                    </div>
+                                    <div class="kkt-item-control">
+                                        <select id="lively-mode-select" style="border:none;background:transparent;text-align:right;font-size:14px;color:var(--primary-color);font-weight:600;">
+                                            <option value="off">关闭</option>
+                                            <option value="natural">自然日常（推荐）</option>
+                                            <option value="vivid">极致微信活人</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="kkt-item" style="flex-direction: column; align-items: stretch; padding-bottom: 20px;">
+                                    <div style="display: flex; align-items: center; margin-bottom: 12px;">
+                                        <div class="kkt-item-icon">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+                                        </div>
+                                        <div class="kkt-item-content">
+                                            <div class="kkt-item-title">温度</div>
+                                            <div class="kkt-item-subtitle">数值越大思维越活跃，越小越严谨</div>
+                                        </div>
+                                        <label class="kkt-switch" style="margin-right: 10px;">
+                                            <input type="checkbox" id="temperature-enabled-switch">
+                                            <span class="kkt-slider"></span>
+                                        </label>
+                                        <span id="temperature-value" style="color: var(--primary-color); font-weight: bold; font-size: 16px;">1.0</span>
+                                    </div>
+                                    <input type="range" id="temperature-slider" min="0" max="2" step="0.1" value="1.0" style="width: 100%; accent-color: var(--primary-color); margin-top: 8px;">
+                                </div>
+                                <div class="kkt-item" style="flex-direction: column; align-items: stretch;">
+                                    <div style="display: flex; align-items: center; width: 100%;">
+                                        <div class="kkt-item-content">
+                                            <div class="kkt-item-title">Top-P（核采样）</div>
+                                            <div class="kkt-item-subtitle">开启后生效，适度放宽（0.9–0.98）用词更鲜活</div>
+                                        </div>
+                                        <label class="kkt-switch" style="margin-right: 10px;">
+                                            <input type="checkbox" id="top-p-enabled-switch">
+                                            <span class="kkt-slider"></span>
+                                        </label>
+                                        <span id="top-p-value" style="color: var(--primary-color); font-weight: bold; font-size: 15px;">0.95</span>
+                                    </div>
+                                    <input type="range" id="top-p-slider" min="0.1" max="1" step="0.05" value="0.95" style="width: 100%; accent-color: var(--primary-color); margin-top: 8px;">
+                                </div>
+                                <div class="kkt-item" style="flex-direction: column; align-items: stretch;">
+                                    <div style="display: flex; align-items: center; width: 100%;">
+                                        <div class="kkt-item-content">
+                                            <div class="kkt-item-title">话题新鲜度（Presence Penalty）</div>
+                                            <div class="kkt-item-subtitle">建议 0.2–0.5，减少反复套话、更爱抛新话题（OpenAI 兼容接口生效）</div>
+                                        </div>
+                                        <label class="kkt-switch" style="margin-right: 10px;">
+                                            <input type="checkbox" id="presence-penalty-enabled-switch">
+                                            <span class="kkt-slider"></span>
+                                        </label>
+                                        <span id="presence-penalty-value" style="color: var(--primary-color); font-weight: bold; font-size: 15px;">0.3</span>
+                                    </div>
+                                    <input type="range" id="presence-penalty-slider" min="-2" max="2" step="0.1" value="0.3" style="width: 100%; accent-color: var(--primary-color); margin-top: 8px;">
+                                </div>
+                                <div class="kkt-item" style="flex-direction: column; align-items: stretch;">
+                                    <div style="display: flex; align-items: center; width: 100%;">
+                                        <div class="kkt-item-content">
+                                            <div class="kkt-item-title">防复读（Frequency Penalty）</div>
+                                            <div class="kkt-item-subtitle">建议 0.2–0.5，压制重复书面句式与口头禅（OpenAI 兼容接口生效）</div>
+                                        </div>
+                                        <label class="kkt-switch" style="margin-right: 10px;">
+                                            <input type="checkbox" id="frequency-penalty-enabled-switch">
+                                            <span class="kkt-slider"></span>
+                                        </label>
+                                        <span id="frequency-penalty-value" style="color: var(--primary-color); font-weight: bold; font-size: 15px;">0.3</span>
+                                    </div>
+                                    <input type="range" id="frequency-penalty-slider" min="-2" max="2" step="0.1" value="0.3" style="width: 100%; accent-color: var(--primary-color); margin-top: 8px;">
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="api-settings-fold" id="api-secondary-settings">
+                        <summary>
+                            <span class="api-fold-title">副 API</span>
+                            <span class="api-fold-description">通话、日记、查手机等辅助功能</span>
+                        </summary>
+                        <div class="api-fold-content">
+                            <div class="kkt-group">
+                                <div class="kkt-item">
+                                    <div class="kkt-item-content">
+                                        <div class="kkt-item-title">启用副 API</div>
+                                        <div class="kkt-item-subtitle">只接管下方勾选的辅助功能，主聊天不受影响</div>
+                                    </div>
+                                    <div class="kkt-item-control">
+                                        <label class="kkt-switch">
+                                            <input type="checkbox" id="secondary-api-enabled">
+                                            <span class="kkt-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div id="secondary-api-panel">
+                                    <div class="kkt-item">
+                                        <div class="kkt-item-content"><div class="kkt-item-title">副 API 服务商</div></div>
+                                        <div class="kkt-item-control">
+                                            <select id="secondary-api-provider" style="border:none;background:transparent;text-align:right;direction:rtl;appearance:none;padding-right:15px;font-size:14px;">
+                                                <option value="newapi">NewAPI (自定义)</option>
+                                                <option value="deepseek">DeepSeek</option>
+                                                <option value="claude">Claude</option>
+                                                <option value="gemini">Gemini</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="kkt-item">
+                                        <div class="kkt-item-content">
+                                            <div class="kkt-item-title">副 API 地址</div>
+                                            <div class="kkt-item-subtitle">Base URL</div>
+                                        </div>
+                                        <div class="kkt-item-control" style="flex:1;max-width:55%;">
+                                            <input type="text" id="secondary-api-url" autocomplete="off" placeholder="https://..." style="text-align:right;border:none;background:transparent;width:100%;font-size:14px;">
+                                        </div>
+                                    </div>
+                                    <div class="kkt-item">
+                                        <div class="kkt-item-content"><div class="kkt-item-title">副 API 密钥</div></div>
+                                        <div class="kkt-item-control" style="flex:1;max-width:55%;">
+                                            <input type="password" id="secondary-api-key" autocomplete="new-password" placeholder="sk-..." style="text-align:right;border:none;background:transparent;width:100%;font-size:14px;">
+                                        </div>
+                                    </div>
+                                    <div class="kkt-item">
+                                        <div class="kkt-item-content"><div class="kkt-item-title">副 API 模型</div></div>
+                                        <div class="kkt-item-control" style="display:flex;gap:8px;max-width:60%;">
+                                            <select id="secondary-api-model" style="min-width:0;max-width:180px;border:none;background:transparent;font-size:14px;"><option value="">请先拉取模型</option></select>
+                                            <button type="button" id="secondary-fetch-models-btn" class="btn btn-secondary" style="width:auto;padding:7px 10px;">拉取</button>
+                                        </div>
+                                    </div>
+                                    <div class="kkt-item" style="display:block;padding-top:14px;padding-bottom:14px;">
+                                        <div class="kkt-item-title" style="margin-bottom:4px;">使用副 API 的功能</div>
+                                        <div class="kkt-item-subtitle" style="margin-bottom:12px;">生图提示词由工坊独立 API 负责，不在此列表中</div>
+                                        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;">
+                                            <label><input type="checkbox" data-secondary-route="callReply"> 通话回复</label>
+                                            <label><input type="checkbox" data-secondary-route="callSummary"> 通话总结</label>
+                                            <label><input type="checkbox" data-secondary-route="journal"> 回忆日记</label>
+                                            <label><input type="checkbox" data-secondary-route="peek"> 偷看手机</label>
+                                            <label><input type="checkbox" data-secondary-route="shop"> 商城生成</label>
+                                            <label><input type="checkbox" data-secondary-route="batteryReminder"> 低电量提醒</label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="api-settings-fold" id="api-memory-settings">
+                        <summary>
+                            <span class="api-fold-title">长期记忆 API</span>
+                            <span class="api-fold-description">独立配置记忆整理模型</span>
+                        </summary>
+                        <div class="api-fold-content">
+                            <div class="kkt-group">
+                                <div class="kkt-item">
+                                    <div class="kkt-item-content">
+                                        <label class="kkt-item-title" for="memory-api-enabled">长期记忆整理独立 API</label>
+                                        <div class="kkt-item-subtitle">用于生成待审核的记忆候选。关闭时沿用该角色的聊天 API。</div>
+                                    </div>
+                                    <label class="kkt-switch">
+                                        <input type="checkbox" id="memory-api-enabled">
+                                        <span class="kkt-slider"></span>
+                                    </label>
+                                </div>
+                                <div id="memory-api-panel" hidden>
+                                    <div class="kkt-item">
+                                        <label class="kkt-item-title" for="memory-api-provider">记忆 API 服务商</label>
+                                        <select id="memory-api-provider">
+                                            <option value="newapi">OpenAI 兼容（自定义）</option>
+                                            <option value="deepseek">DeepSeek</option>
+                                            <option value="gemini">Gemini</option>
+                                        </select>
+                                    </div>
+                                    <div class="kkt-item">
+                                        <label class="kkt-item-title" for="memory-api-url">记忆 API 地址</label>
+                                        <input id="memory-api-url" type="text" autocomplete="off" placeholder="https://…">
+                                    </div>
+                                    <div class="kkt-item">
+                                        <label class="kkt-item-title" for="memory-api-key">记忆 API 密钥</label>
+                                        <input id="memory-api-key" type="password" autocomplete="new-password" placeholder="sk-…">
+                                    </div>
+                                    <div class="kkt-item">
+                                        <label class="kkt-item-title" for="memory-api-model">记忆 API 模型</label>
+                                        <div class="kkt-item-control">
+                                            <input id="memory-api-model" type="text" list="memory-api-models" autocomplete="off" placeholder="填写或下方选择模型 ID">
+                                            <datalist id="memory-api-models"></datalist>
+                                            <button type="button" id="memory-fetch-models-btn" class="btn btn-secondary">拉取</button>
+                                        </div>
+                                    </div>
+                                    <div class="kkt-item" id="memory-api-model-select-row" hidden>
+                                        <label class="kkt-item-title" for="memory-api-model-select">选择已拉取模型</label>
+                                        <select id="memory-api-model-select"></select>
+                                    </div>
+                                </div>
+                                <div class="kkt-item">
+                                    <button type="button" id="memory-save-api-btn" class="btn btn-secondary">保存记忆 API</button>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="api-settings-fold" id="api-voice-settings">
+                        <summary>
+                            <span class="api-fold-title">语音输入与合成</span>
+                            <span class="api-fold-description">麦克风转写、角色语音</span>
+                        </summary>
+                        <div class="api-fold-content">
+                            <div class="api-voice-slot" id="api-stt-settings-slot"></div>
+                            <div class="api-voice-slot" id="api-tts-settings-slot"></div>
+                        </div>
+                    </details>
                 </form>
-    
-                <!-- 预设管理 -->
-                <div class="kkt-group" style="margin-top: 16px;">
-                    <div class="kkt-item" style="flex-direction: column; align-items: stretch; padding: 16px;">
-                        <div style="display: flex; align-items: center; margin-bottom: 16px;">
-                            <div class="kkt-item-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-                            </div>
-                            <div class="kkt-item-content">
-                                <div class="kkt-item-title">API 预设管理</div>
-                                <div class="kkt-item-subtitle">保存或加载常用配置</div>
-                            </div>
-                        </div>
-                        
-                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-                            <select id="api-preset-select" style="flex:1; padding:10px 12px; border-radius:8px; border:1px solid #e0e0e0; background: #f9f9f9; font-size: 14px; outline: none;">
-                                <option value="">— 选择预设 —</option>
-                            </select>
-                            <button type="button" id="api-apply-preset" class="btn btn-primary" style="padding: 10px 16px; border-radius: 8px; width: auto;">应用</button>
-                        </div>
-                        
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
-                            <button type="button" id="api-save-preset" class="btn btn-secondary" style="border-radius: 8px; padding: 10px;">另存为</button>
-                            <button type="button" id="api-manage-presets" class="btn btn-secondary" style="border-radius: 8px; padding: 10px;">管理</button>
-                            <button type="button" id="api-import-presets" class="btn btn-neutral" style="border-radius: 8px; padding: 10px; background: #f5f5f5;">导入</button>
-                            <button type="button" id="api-export-presets" class="btn btn-neutral" style="border-radius: 8px; padding: 10px; background: #f5f5f5;">导出</button>
-                        </div>
-                    </div>
-                </div>
-                
+
                 <div id="api-presets-modal" class="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:9999;align-items:center;justify-content:center;">
                     <div class="modal-window" style="width:640px;max-width:94%;background:var(--panel-bg,#fff);padding:20px;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,0.12);">
                         <h3 style="margin:0 0 16px 0; font-size: 18px;">API 预设管理</h3>
@@ -14864,6 +15078,12 @@ textarea.mp-transparent-input {
                 </div>
             </div>
         </main>
+        <footer class="api-settings-footer">
+            <button type="submit" form="api-form" class="btn btn-primary" id="save-btn">
+                <span class="btn-text">保存 API 设置</span>
+                <div class="spinner"></div>
+            </button>
+        </footer>
     </div>
     <div id="wallpaper-screen" class="screen">
         <header class="app-header"><button class="back-btn" data-target="home-screen">‹</button><div class="title-container"><h1 class="title">更换壁纸</h1></div><div class="placeholder"></div></header><main class="content"><div class="wallpaper-preview" id="wallpaper-preview"><span>当前壁纸预览</span></div><input type="file" id="wallpaper-upload" accept="image/*" style="display: none;"><label for="wallpaper-upload" class="btn btn-primary">从相册选择新壁纸</label></main>
@@ -17115,8 +17335,9 @@ textarea.mp-transparent-input {
             });
         }
     </script>
-    <script src="./plugins/smart-auto-reply.js?v=20261121"></script>
-    <script src="./plugins/voice-tts.js?v=20261121"></script>
-    <script src="./plugins/voice-input.js?v=20261121"></script>
+    <script src="./plugins/os-notify.js?v=20261124"></script>
+    <script src="./plugins/smart-auto-reply.js?v=20261124"></script>
+    <script src="./plugins/voice-tts.js?v=20261124"></script>
+    <script src="./plugins/voice-input.js?v=20261124"></script>
 </body>
 </html>

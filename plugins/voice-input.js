@@ -628,7 +628,7 @@
         box.id = 'api-voice-input-section';
         box.innerHTML = `
             <div class="kkt-item" style="flex-direction:column;align-items:stretch;gap:8px;width:100%;box-sizing:border-box;overflow:hidden;">
-                <div class="kkt-item-title">真实语音输入（麦克风说话转文字）</div>
+                <div class="kkt-item-title">麦克风转写</div>
                 <select id="uwu-stt-mode" style="width:100%;box-sizing:border-box;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid #d0d7de;background:#fff;font-size:13px;">
                     <option value="browser">浏览器自带识别（免费、无需 API）</option>
                     <option value="whisper">Whisper 录音接口（高准确率/中英混读）</option>
@@ -655,7 +655,9 @@
                 <button type="button" id="uwu-stt-save-btn" class="btn btn-primary" style="width:100%;box-sizing:border-box;padding:8px 12px;font-size:13px;">保存语音输入设置</button>
             </div>
         `;
-        anchor.parentElement.insertBefore(box, anchor.nextSibling);
+        const slot = document.getElementById('api-stt-settings-slot');
+        if (slot) slot.appendChild(box);
+        else anchor.parentElement.insertBefore(box, anchor.nextSibling);
 
         const modeEl = document.getElementById('uwu-stt-mode');
         const langEl = document.getElementById('uwu-stt-lang');

@@ -297,8 +297,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 try { navigator.vibrate([18, 35, 18]); } catch (e) {}
             }
 
-            chat.history ||= [];
-            chat.history.push({
+            // 1. 立即原地触发头像抖动动画（0 延迟，不等写库也不重绘整页）
+            img.classList.remove('uwu-poke-shake');
+            void img.offsetWidth;
+            img.classList.add('uwu-poke-shake');
+            setTimeout(() => img.classList.remove('uwu-poke-shake'), 520);
+
+            // 2. 立即把拍一拍小字气泡追加到聊天底部
+            const pokeMsg = {
                 id: `msg_poke_${Date.now()}`,
                 role: 'user',
                 content: msgContent,
@@ -306,20 +312,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 isPoke: true,
                 pokeDisplay: displayLine,
                 timestamp: Date.now()
-            });
-            if (typeof saveData === 'function') await saveData();
-            if (typeof renderMessages === 'function') renderMessages(false, true);
+            };
+            chat.history ||= [];
+            chat.history.push(pokeMsg);
+            if (typeof addMessageBubble === 'function') {
+                addMessageBubble(pokeMsg, currentChatId, 'private');
+            } else if (typeof renderMessages === 'function') {
+                renderMessages(false, true);
+            }
 
-            // 重绘后再对新渲染出的对应头像施加抖动动画，确保肉眼清晰可见
-            const freshImg = targetMsgId
-                ? document.querySelector(`.message-wrapper[data-id="${targetMsgId}"] .message-info img`)
-                : null;
-            const animTarget = freshImg || img;
-            if (animTarget) {
-                animTarget.classList.remove('uwu-poke-shake');
-                void animTarget.offsetWidth;
-                animTarget.classList.add('uwu-poke-shake');
-                setTimeout(() => animTarget.classList.remove('uwu-poke-shake'), 520);
+            // 3. 后台异步单角色轻量落盘，彻底不阻塞交互手感
+            if (typeof window.saveSingleChatFast === 'function') {
+                window.saveSingleChatFast(chat, 'private').catch(() => {});
+            } else if (typeof saveData === 'function') {
+                saveData().catch(() => {});
             }
         } else {
             lastTapTime = now;

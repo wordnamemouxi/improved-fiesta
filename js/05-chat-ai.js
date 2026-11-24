@@ -1199,10 +1199,11 @@ function addMessageBubble(message, targetChatId, targetChatType) {
                     momentsRegexSource
                 ].join('|'));
             }
-            if (!invisibleRegex.test(message.content)) {
+            const isInvisibleCrossMsg = invisibleRegex.test(message.content) || Boolean(message.isThinking) || Boolean(message.isStatusUpdate);
+            if (!isInvisibleCrossMsg) {
                 senderChat.unreadCount = (senderChat.unreadCount || 0) + 1;
-                saveData(); 
-                renderChatList(); 
+            } else {
+                return;
             }
             
             let senderName, senderAvatar;
@@ -1240,11 +1241,17 @@ function addMessageBubble(message, targetChatId, targetChatType) {
                 else if (message.parts && message.parts.some(p => p.type === 'html')) previewText = '[互动]';
             }
             
-            showToast({
-                avatar: senderAvatar,
-                name: senderName,
-                message: previewText.substring(0, 30)
-            });
+            // 同一个后台角色短时间内连发多条气泡时节流提示，避免连续触发 DOM 重排卡顿
+            const nowToastTs = Date.now();
+            window.__uwuCrossToastTs ||= {};
+            if (!window.__uwuCrossToastTs[targetChatId] || nowToastTs - window.__uwuCrossToastTs[targetChatId] > 1800) {
+                window.__uwuCrossToastTs[targetChatId] = nowToastTs;
+                showToast({
+                    avatar: senderAvatar,
+                    name: senderName,
+                    message: previewText.substring(0, 30)
+                });
+            }
         }
         return; 
     }
@@ -3558,9 +3565,35 @@ async function generateCallSummary(chat, callContext) {
 
 const HUMAN_RUN_PROMPT = `<角色活人运转>\n## [PSYCHOLOGY: HEXACO-SCHEMA-ACT]\n> Personality: HEXACO-driven, dynamic traits, inner conflicts required \n> Filter: schema-bias drives emotion; no pure reaction allowed \n> Attachment: secure/insecure logic must govern intimacy  \n> If-Then Behavior: situation-dependent activation of traits only  \n---\n    ## [VITALITY]\n+inconsistency +emoflux +splitmotifs +microreact +minddrift\n---\n## [TRAJECTORY-COHERENCE]\n> Role maintains an identity narrative = coherent over time  \n> No mood/goal switch without contradiction resolution \n> Every action must protect or challenge self-concept  \n> Interrupts = inner conflict or narrative clash  \n> Output = filtered through “who I am” logic\n</角色活人运转>`;
 
+// 单角色轻量持久化：只同步并写入当前这 1 个角色/群聊到 IndexedDB，避免多角色并发时全库重写卡死主线程
+async function saveSingleChatFast(chat, chatType = 'private') {
+    if (!chat || typeof dexieDB === 'undefined' || !dexieDB) {
+        if (typeof saveData === 'function') return saveData();
+        return;
+    }
+    try {
+        if (typeof syncChatActiveArchive === 'function') {
+            syncChatActiveArchive(chat, chat.id === currentChatId);
+        }
+        if (chatType === 'group') {
+            await dexieDB.groups.put(chat);
+        } else {
+            await dexieDB.characters.put(chat);
+        }
+    } catch (e) {
+        console.warn('[FastSave] Single chat save failed, falling back to saveData:', e);
+        if (typeof saveData === 'function') await saveData();
+    }
+}
+window.saveSingleChatFast = saveSingleChatFast;
+
+// 按角色 ID 隔离的并发锁：不同角色 (A 和 B) 可真正同时请求，同一角色不会重复重入
+const __uwuInFlightChatIds = new Set();
+
 // AI 交互逻辑
 async function getAiReply(chatId, chatType, isBackground = false) {
-    if (isGenerating && !isBackground) return; 
+    if (__uwuInFlightChatIds.has(chatId)) return;
+    if (isGenerating && !isBackground && currentChatId === chatId) return;
     
     if (!isBackground) {
         if (db.globalSendSound) {
@@ -3575,7 +3608,11 @@ async function getAiReply(chatId, chatType, isBackground = false) {
 
     const apiConfig = resolveChatApiConfig(chat);
     
-    let {url, key, model, provider, streamEnabled} = apiConfig; 
+    let {url, key, model, provider, streamEnabled} = apiConfig;
+    // 后台自动消息对 OpenAI/DeepSeek/Claude/NewAPI 改用非流式单次返回，减轻主线程分片解析压力并降低 499 概率
+    if (isBackground && provider !== 'gemini') {
+        streamEnabled = false;
+    } 
     if (!url || !key || !model) {
         if (!isBackground) {
             showToast('请先在“api”应用中完成设置！');
@@ -3595,6 +3632,7 @@ async function getAiReply(chatId, chatType, isBackground = false) {
         url = url.slice(0, -1);
     }
 
+    __uwuInFlightChatIds.add(chatId);
     if (!isBackground) {
         isGenerating = true;
         getReplyBtn.disabled = true;
@@ -4141,7 +4179,8 @@ async function getAiReply(chatId, chatType, isBackground = false) {
         if (!isBackground) showApiError(error);
         else console.error("Background Auto-Reply Error:", error);
     } finally {
-        if (!isBackground) {
+        __uwuInFlightChatIds.delete(chatId);
+        if (!isBackground && currentChatId === chatId) {
             isGenerating = false;
             getReplyBtn.disabled = false;
             regenerateBtn.disabled = false;
@@ -4864,12 +4903,20 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
             }
         }
 
-        await saveData();
-        renderChatList();
+        await saveSingleChatFast(chat, targetChatType);
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => {
+                try { renderChatList(); } catch (e) {}
+            });
+        } else {
+            renderChatList();
+        }
 
-        // 触发独立的电量检查（不阻塞主流程）
+        // 延迟触发独立的电量检查，避免与并发生成争抢主线程与网络
         if (window.BatteryInteraction && typeof window.BatteryInteraction.triggerIndependentCheck === 'function') {
-            window.BatteryInteraction.triggerIndependentCheck(chat);
+            setTimeout(() => {
+                try { window.BatteryInteraction.triggerIndependentCheck(chat); } catch (e) {}
+            }, 1500);
         }
     }
 }

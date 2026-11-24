@@ -86,7 +86,7 @@
 
     function saveConfig(patch) {
         const next = { ...loadConfig(), ...patch };
-        try { localStorage.setItem(CFG_KEY, JSON.stringify(next)); } catch (e) {}
+        localStorage.setItem(CFG_KEY, JSON.stringify(next));
         return next;
     }
 
@@ -409,7 +409,7 @@
                     <label for="uwu-tts-preview-voice">MiniMax 试听音色 ID</label>
                     <div style="display:flex;gap:6px;margin-top:6px;">
                         <input type="text" id="uwu-tts-preview-voice" placeholder="填入你的角色音色 ID" style="flex:1;min-width:0;padding:8px;border:1px solid #d0d7de;border-radius:8px;font-size:13px;">
-                        <button type="button" id="uwu-tts-preview-btn" style="flex-shrink:0;padding:8px 10px;border:1px solid #d0d7de;border-radius:8px;background:#fff;">试听</button>
+                        <button type="button" id="uwu-tts-preview-btn" style="flex-shrink:0;padding:8px 10px;border:1px solid #d0d7de;border-radius:8px;background:#fff;">保存并试听</button>
                     </div>
                 </div>
                 <button type="button" id="uwu-tts-save-api-btn" class="btn btn-primary" style="width:100%;box-sizing:border-box;padding:8px 12px;font-size:13px;">保存语音 API 设置</button>
@@ -483,10 +483,16 @@
             model: modelEl.value.trim()
         });
 
-        saveBtn.addEventListener('click', () => {
-            saveConfig(readApiSettings());
-            window.showToast?.('语音 API 设置已保存');
-        });
+        const saveApiSettings = settings => {
+            try {
+                saveConfig(settings);
+                window.showToast?.('语音 API 设置已保存，可在角色页使用');
+            } catch (error) {
+                console.warn('[VoiceTTS] Could not save API settings:', error.name);
+                window.showToast?.('浏览器未能保存语音 API 设置');
+            }
+        };
+        saveBtn.addEventListener('click', () => saveApiSettings(readApiSettings()));
 
         previewBtn.addEventListener('click', async () => {
             const voiceId = previewVoice.value.trim();
@@ -494,15 +500,20 @@
                 window.showToast?.('请填写要试听的音色 ID');
                 return;
             }
+            const settings = readApiSettings();
             previewBtn.disabled = true;
             previewBtn.textContent = '合成中…';
             try {
-                await playVoiceForBubble(previewBtn, PREVIEW_TEXT, {
-                    voiceTts: { voiceId, provider: 'minimax' }
-                }, 'api_minimax_preview', { forceRegenerate: true, cfg: readApiSettings() });
+                const played = await playVoiceForBubble(previewBtn, PREVIEW_TEXT, {
+                    voiceTts: { voiceId }
+                }, 'api_minimax_preview', { forceRegenerate: true, cfg: settings });
+                if (!played) return;
+                const current = readApiSettings();
+                if (Object.keys(settings).every(key => settings[key] === current[key])) saveApiSettings(settings);
+                else window.showToast?.('试听期间配置有改动，请重新保存');
             } finally {
                 previewBtn.disabled = false;
-                previewBtn.textContent = '试听';
+                previewBtn.textContent = '保存并试听';
             }
         });
     }
@@ -632,6 +643,7 @@
                 stylePrefix: (sty?.value || '').trim()
             };
             await window.saveSingleChatFast(ch, 'private');
+            return ch;
         };
 
         sw.addEventListener('change', persistCharVoice);
@@ -652,11 +664,8 @@
         if (sty) sty.addEventListener('change', persistCharVoice);
         testBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            await persistCharVoice();
-            const ch = (typeof currentChatId !== 'undefined' && window.db?.characters)
-                ? window.db.characters.find(c => c.id === currentChatId)
-                : null;
-            if (!ch) return;
+            const ch = await persistCharVoice();
+            if (!ch || ch.id !== currentChatId) return;
             await playVoiceForBubble(testBtn, PREVIEW_TEXT, ch, 'preview_' + ch.id, { forceRegenerate: true });
         });
 

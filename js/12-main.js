@@ -306,6 +306,7 @@ function showGlobalRescuePanel() {
 // 私聊首次打开「查手机／动态」时再下载，下载后复用同一个模块。
 const PEEK_SCRIPT_URL = './js/09-peek-phone.js?v=20261121';
 const PEEK_SCRIPT_BYTES = 9157168;
+const PEEK_MODULE_CACHE = 'mouxi-peek-module-v1';
 let peekFeatureLoad = null;
 
 async function downloadPeekModule(onProgress) {
@@ -370,25 +371,65 @@ function executePeekModule(blob) {
     }).finally(() => URL.revokeObjectURL(url));
 }
 
+async function openPeekModuleCache() {
+    try {
+        return await window.caches?.open(PEEK_MODULE_CACHE);
+    } catch {
+        return null;
+    }
+}
+
+async function readCachedPeekModule(cache) {
+    try {
+        const response = await cache?.match(PEEK_SCRIPT_URL);
+        const blob = await response?.blob();
+        return blob?.size ? blob : null;
+    } catch {
+        return null;
+    }
+}
+
 function loadPeekFeature(update) {
     if (peekFeatureLoad) return peekFeatureLoad;
     peekFeatureLoad = (async () => {
-        if (typeof setupPeekFeature !== 'function') {
-            update('正在连接…');
-            const blob = await downloadPeekModule((received, total) => {
-                update('正在下载模块…', received, total);
-            });
-            update('下载完成，正在初始化…');
-            await executePeekModule(blob);
-        } else {
-            update('正在初始化…');
+        let cache;
+        let cachedBlob;
+        let downloadedBlob;
+        try {
+            if (typeof setupPeekFeature !== 'function') {
+                update('正在检查本机缓存…');
+                cache = await openPeekModuleCache();
+                cachedBlob = await readCachedPeekModule(cache);
+                if (cachedBlob) {
+                    update('已读取本机缓存，正在初始化…');
+                } else {
+                    update('正在连接…');
+                    downloadedBlob = await downloadPeekModule((received, total) => {
+                        update('正在下载模块…', received, total);
+                    });
+                    update('下载完成，正在初始化…');
+                }
+                await executePeekModule(cachedBlob || downloadedBlob);
+            } else {
+                update('正在初始化…');
+            }
+            if (typeof setupPeekFeature !== 'function' || typeof renderPeekScreen !== 'function'
+                || typeof renderMomentsScreen !== 'function') {
+                throw new Error('模块初始化未完成');
+            }
+            await setupPeekFeature();
+        } catch (error) {
+            if (cachedBlob) {
+                await cache.delete(PEEK_SCRIPT_URL).catch(() => {});
+                throw new Error(`本机缓存无法使用：${error.message || '初始化失败'}。可点重试。`);
+            }
+            throw error;
         }
-        if (typeof setupPeekFeature !== 'function' || typeof renderPeekScreen !== 'function'
-            || typeof renderMomentsScreen !== 'function') {
-            throw new Error('已下载，但模块初始化未完成');
-        }
-        await setupPeekFeature();
         window.__uwuPeekFeatureReady = true;
+        // 只缓存成功初始化的版本，写入不会阻塞本次打开。
+        if (cache && downloadedBlob) {
+            cache.put(PEEK_SCRIPT_URL, new Response(downloadedBlob)).catch(() => {});
+        }
     })().catch(error => {
         peekFeatureLoad = null;
         throw error;

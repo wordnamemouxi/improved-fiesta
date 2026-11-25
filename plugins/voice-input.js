@@ -367,7 +367,11 @@
     }
 
     function stopAudioCapture(session) {
-        if (session.recorder?.state === 'recording') session.recorder.stop();
+        if (session.finishNativeRecording) {
+            session.finishNativeRecording();
+        } else if (session.recorder?.state === 'recording') {
+            session.recorder.stop();
+        }
     }
 
     async function captureVoiceAudio(session) {
@@ -471,6 +475,39 @@
         }
     }
 
+    function captureAndroidVoiceAudio(session, bridge) {
+        const status = bridge.startVoiceRecording();
+        if (status === 'permission') {
+            window.showToast?.('请允许某昔专线使用麦克风，然后重新长按录音');
+            return null;
+        }
+        if (status !== 'recording') {
+            throw new Error(status === 'busy' ? '麦克风正在录音' : '安卓录音启动失败，请确认麦克风可用后重试');
+        }
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                endHoldRecording(true);
+                window.showToast?.('单条语音最长录制 2 分钟');
+            }, 120000);
+            session.finishNativeRecording = () => {
+                session.finishNativeRecording = null;
+                clearTimeout(timeout);
+                try {
+                    const encoded = bridge.finishVoiceRecording(!session.cancelled);
+                    if (session.cancelled) {
+                        resolve(null);
+                        return;
+                    }
+                    if (!encoded) throw new Error('未收到录音，请重新长按说话');
+                    const audio = Uint8Array.from(atob(encoded), ch => ch.charCodeAt(0));
+                    resolve(new Blob([audio], { type: 'audio/mp4' }));
+                } catch (error) {
+                    reject(error);
+                }
+            };
+        });
+    }
+
     async function startWhisperRecording(session) {
         const cfg = session.cfg;
         const apiKey = (cfg.apiKey || window.db?.apiSettings?.key || '').trim();
@@ -484,7 +521,10 @@
         }
 
         try {
-            const audio = await captureVoiceAudio(session);
+            const bridge = window.MouxiAndroid;
+            const audio = await (bridge?.startVoiceRecording
+                ? captureAndroidVoiceAudio(session, bridge)
+                : captureVoiceAudio(session));
             if (!audio || session.cancelled) return;
             const ext = audio.type.includes('mp4') ? 'm4a' : 'webm';
             const form = new FormData();
@@ -831,5 +871,17 @@
         bootstrap();
     }
 
-    window.VoiceInputPlugin = { loadConfig, saveConfig, startHoldRecording, endHoldRecording, fillOrSendText, bootstrap };
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && recordingSession?.finishNativeRecording) endHoldRecording(true);
+    });
+
+    function finishAndroidPermission(granted) {
+        window.showToast?.(granted
+            ? '麦克风已允许，请重新长按录音'
+            : '请在手机设置中允许某昔专线使用麦克风');
+    }
+
+    window.VoiceInputPlugin = {
+        loadConfig, saveConfig, startHoldRecording, endHoldRecording, fillOrSendText, bootstrap, finishAndroidPermission
+    };
 })();

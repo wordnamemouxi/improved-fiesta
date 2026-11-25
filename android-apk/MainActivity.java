@@ -5,6 +5,8 @@ import android.app.*;
 import android.content.*;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.media.MediaRecorder;
+import android.util.Base64;
 import android.os.Build;
 import android.os.Bundle;
 import android.webkit.*;
@@ -18,7 +20,12 @@ public final class MainActivity extends Activity {
     private static final String CHANNEL = "character_messages";
     private WebView web;
     private ValueCallback<Uri[]> picker;
+    private static final int VOICE_PERMISSION = 5;
+    private static final int MAX_VOICE_BYTES = 2 * 1024 * 1024;
     private PermissionRequest microphone;
+    private MediaRecorder voiceRecorder;
+    private File voiceFile;
+    private boolean requestingVoicePermission;
     private int nextNotificationId = (int) (System.currentTimeMillis() & Integer.MAX_VALUE);
     private boolean pageReady;
     private volatile boolean foreground;
@@ -106,6 +113,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onPause() {
         foreground = false;
+        finishVoiceCapture(false);
         super.onPause();
     }
 
@@ -148,6 +156,11 @@ public final class MainActivity extends Activity {
             microphone = null;
         }
         if (req == 4) web.evaluateJavascript("window.finishMouxiNotificationPermission?.()", null);
+        if (req == VOICE_PERMISSION) {
+            requestingVoicePermission = false;
+            boolean granted = result.length > 0 && result[0] == PackageManager.PERMISSION_GRANTED;
+            web.evaluateJavascript("window.VoiceInputPlugin?.finishAndroidPermission(" + granted + ")", null);
+        }
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -175,7 +188,71 @@ public final class MainActivity extends Activity {
         return "denied";
     }
 
+    private synchronized String startVoiceCapture() {
+        if (!foreground) return "background";
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            runOnUiThread(() -> {
+                if (!foreground || requestingVoicePermission) return;
+                requestingVoicePermission = true;
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, VOICE_PERMISSION);
+            });
+            return "permission";
+        }
+        if (voiceRecorder != null) return "busy";
+        try {
+            voiceFile = File.createTempFile("voice-", ".m4a", getCacheDir());
+            voiceRecorder = Build.VERSION.SDK_INT >= 31 ? new MediaRecorder(this) : new MediaRecorder();
+            voiceRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            voiceRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            voiceRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            voiceRecorder.setAudioChannels(1);
+            voiceRecorder.setAudioEncodingBitRate(64000);
+            voiceRecorder.setMaxDuration(125000);
+            voiceRecorder.setOutputFile(voiceFile.getAbsolutePath());
+            voiceRecorder.prepare();
+            voiceRecorder.start();
+            return "recording";
+        } catch (IOException | RuntimeException error) {
+            android.util.Log.w("Mouxi", "Could not start native voice recording", error);
+            finishVoiceCapture(false);
+            return "failed";
+        }
+    }
+
+    private synchronized String finishVoiceCapture(boolean keepAudio) {
+        MediaRecorder recorder = voiceRecorder;
+        File file = voiceFile;
+        voiceRecorder = null;
+        voiceFile = null;
+        try {
+            if (recorder == null) return "";
+            try {
+                if (keepAudio) recorder.stop();
+            } finally {
+                recorder.release();
+            }
+            if (!keepAudio || file == null) return "";
+            long length = file.length();
+            if (length <= 0 || length > MAX_VOICE_BYTES) return "";
+            byte[] audio = new byte[(int) length];
+            try (DataInputStream input = new DataInputStream(new FileInputStream(file))) {
+                input.readFully(audio);
+            }
+            return Base64.encodeToString(audio, Base64.NO_WRAP);
+        } catch (IOException | RuntimeException error) {
+            android.util.Log.w("Mouxi", "Could not finish native voice recording", error);
+            return "";
+        } finally {
+            if (file != null) file.delete();
+        }
+    }
+
     private final class NativeBridge {
+        @JavascriptInterface public String startVoiceRecording() { return startVoiceCapture(); }
+        @JavascriptInterface public String finishVoiceRecording(boolean save) {
+            return finishVoiceCapture(save && foreground);
+        }
+
         @JavascriptInterface public boolean isAppInForeground() { return foreground; }
 
         @JavascriptInterface public boolean beginManualGeneration(String token) {

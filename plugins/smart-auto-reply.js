@@ -247,7 +247,7 @@
                 let body = thinkEnd !== -1 ? cleaned.slice(thinkEnd + 11) : cleaned;
 
                 const pingMatch = body.match(/\[NEXT_PING:(\d{1,4})(?:\|([^\]]*))?\]/i);
-                if (pingMatch && (!isBackground || !window.MouxiAndroid?.scheduleCharacterAlarm)) {
+                if (pingMatch && (!isBackground || !(window.MouxiAndroid?.scheduleCharacterAlarm || window.MouxiAndroid?.isAlarmWorker?.()))) {
                     const rawMins = Number.parseInt(pingMatch[1], 10);
                     const mins = Math.max(MIN_MINUTES, Math.min(MAX_MINUTES, Number.isFinite(rawMins) ? rawMins : 90));
                     const reason = (pingMatch[2] || '').trim().slice(0, 60);

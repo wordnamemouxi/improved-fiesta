@@ -35,6 +35,12 @@ old = '    init().then(() => {'
 if s.count(old) != 1:
     raise ValueError('Missing startup sync')
 p.write_text(s.replace(old, old + '\n        window.syncMouxiCharacterAlarms?.();', 1))
+old = "document.addEventListener('DOMContentLoaded', () => {\n    initDatabase();\n"
+new = "document.addEventListener('DOMContentLoaded', () => {\n    const worker = window.MouxiAndroid;\n    if (worker?.isAlarmWorker?.()) {\n        (async () => {\n            const token = worker.getAlarmToken();\n            try {\n                initDatabase();\n                await loadData();\n                await window.runMouxiScheduledReply(worker.getAlarmChat(), token);\n            } catch (error) {\n                console.warn('[Android] Scheduled startup failed:', error);\n                worker.finishBackgroundTest(token, 'scheduled');\n            }\n        })();\n        return;\n    }\n    initDatabase();\n"
+s = p.read_text()
+if s.count(old) != 1:
+    raise ValueError('Missing Android worker startup anchor')
+p.write_text(s.replace(old, new, 1))
 PY
 "$tools/aapt2" compile --dir apk-work/res -o apk-work/resources.zip
 "$tools/aapt2" link -o apk-work/unsigned.apk -I "$platform" --manifest android-apk/AndroidManifest.xml -A apk-work/assets apk-work/resources.zip
@@ -43,9 +49,9 @@ jar cf apk-work/classes.jar -C apk-work/classes .
 "$tools/d8" --lib "$platform" --min-api 26 --output apk-work/dex apk-work/classes.jar
 (cd apk-work/dex && zip -q ../unsigned.apk classes.dex)
 "$tools/zipalign" -f 4 apk-work/unsigned.apk apk-work/aligned.apk
-cp apk-work/aligned.apk dist/Mouxi-Android-0.1.4-unsigned.apk
+cp apk-work/aligned.apk dist/Mouxi-Android-0.1.5-unsigned.apk
 cp "$tools/lib/apksigner.jar" dist/apksigner.jar
-"$tools/zipalign" -c 4 dist/Mouxi-Android-0.1.4-unsigned.apk
-"$tools/aapt2" dump badging dist/Mouxi-Android-0.1.4-unsigned.apk | sed -n '1,15p'
-unzip -tq dist/Mouxi-Android-0.1.4-unsigned.apk
+"$tools/zipalign" -c 4 dist/Mouxi-Android-0.1.5-unsigned.apk
+"$tools/aapt2" dump badging dist/Mouxi-Android-0.1.5-unsigned.apk | sed -n '1,15p'
+unzip -tq dist/Mouxi-Android-0.1.5-unsigned.apk
 sha256sum dist/*

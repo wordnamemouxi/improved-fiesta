@@ -219,7 +219,7 @@
         for (let i = 0; i < previewItems.length; i++) {
             if (chat.osNotifyEnabled !== true || isWebPageInForeground()) break;
             const item = previewItems[i];
-            if (i > 0) {
+            if (i > 0 && !window.MouxiAndroid?.isAlarmWorker?.()) {
                 const baseDelay = 1800 + Math.min((item.text || '').length * 45, 1600) + Math.floor(Math.random() * 800);
                 await new Promise(res => setTimeout(res, baseDelay));
                 if (isWebPageInForeground()) break;
@@ -302,7 +302,8 @@
                     : [];
                 const previewItems = extractMessagePreviewList(addedMsgs, chat);
                 if (previewItems.length > 0) {
-                    showSystemNotificationsIndividually(chat, previewItems).catch(() => {});
+                    const delivery = showSystemNotificationsIndividually(chat, previewItems).catch(() => {});
+                    if (window.MouxiAndroid?.isAlarmWorker?.()) await delivery;
                 }
             }
             return res;

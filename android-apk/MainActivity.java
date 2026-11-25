@@ -24,7 +24,7 @@ public final class MainActivity extends Activity {
     private volatile boolean foreground;
     private String pendingChat = "";
 
-    private boolean local(Uri uri) {
+    private static boolean local(Uri uri) {
         return uri != null && "https".equals(uri.getScheme()) && HOST.equals(uri.getHost())
             && uri.getPort() == -1 && uri.getUserInfo() == null;
     }
@@ -43,21 +43,7 @@ public final class MainActivity extends Activity {
         web.addJavascriptInterface(new NativeBridge(), "MouxiAndroid");
         web.setWebViewClient(new WebViewClient() {
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
-                Uri uri = req.getUrl();
-                if (!local(uri)) return null;
-                String path = uri.getPath();
-                if (path == null || !path.startsWith("/app/") || path.contains("..") || path.contains("\\")) {
-                    return missing();
-                }
-                try {
-                    String asset = path.substring(5);
-                    if (asset.isEmpty()) asset = "index.html";
-                    String type = URLConnectionMime.guess(asset);
-                    return new WebResourceResponse(type, type.startsWith("text/") || type.contains("json")
-                        ? "UTF-8" : null, getAssets().open("web/" + asset));
-                } catch (IOException error) {
-                    return missing();
-                }
+                return readLocalAsset(MainActivity.this, req.getUrl());
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri uri = req.getUrl();
@@ -102,7 +88,13 @@ public final class MainActivity extends Activity {
             }
         });
         setContentView(web);
-        String chat = getIntent().getStringExtra("chatId");
+        if (!BackgroundTest.workerRequired) loadVisiblePage();
+    }
+
+    private void loadVisiblePage() {
+        if (isFinishing() || isDestroyed()) return;
+        String chat = pendingChat.isEmpty() ? getIntent().getStringExtra("chatId") : pendingChat;
+        pendingChat = "";
         web.loadUrl(ROOT + "index.html" + (chat == null || chat.isEmpty() ? "" : "?openChat=" + Uri.encode(chat)));
     }
 
@@ -117,7 +109,24 @@ public final class MainActivity extends Activity {
         super.onPause();
     }
 
-    private WebResourceResponse missing() {
+    private static WebResourceResponse readLocalAsset(Context context, Uri uri) {
+        if (!local(uri)) return null;
+        String path = uri.getPath();
+        if (path == null || !path.startsWith("/app/") || path.contains("..") || path.contains("\\")) {
+            return missing();
+        }
+        try {
+            String asset = path.substring(5);
+            if (asset.isEmpty()) asset = "index.html";
+            String type = URLConnectionMime.guess(asset);
+            return new WebResourceResponse(type, type.startsWith("text/") || type.contains("json")
+                ? "UTF-8" : null, context.getAssets().open("web/" + asset));
+        } catch (IOException error) {
+            return missing();
+        }
+    }
+
+    private static WebResourceResponse missing() {
         return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found",
             java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
     }
@@ -290,7 +299,6 @@ public final class MainActivity extends Activity {
 
         @Override public void onReceive(Context context, Intent message) {
             MainActivity page = BackgroundTest.owner.get();
-            if (page == null || page.isDestroyed() || page.isFinishing()) return;
             String chat = message.getStringExtra("chat");
             String token = message.getStringExtra("token");
             if (chat == null || token == null) return;
@@ -301,11 +309,14 @@ public final class MainActivity extends Activity {
                 } catch (RuntimeException ignored) {}
                 return;
             }
+            BackgroundTest.workerRequired = page == null || page.isDestroyed() || page.isFinishing();
             try {
                 context.startForegroundService(new Intent(context, BackgroundTest.class)
                     .putExtra("chat", chat).putExtra("token", token).putExtra("scheduled", true));
             } catch (RuntimeException error) {
+                BackgroundTest.workerRequired = false;
                 BackgroundTest.active.compareAndSet(token, null);
+                android.util.Log.w("Mouxi", "Android blocked scheduled generation", error);
             }
         }
     }
@@ -318,6 +329,9 @@ public final class MainActivity extends Activity {
             new java.util.concurrent.atomic.AtomicReference<>();
         static java.lang.ref.WeakReference<MainActivity> owner = new java.lang.ref.WeakReference<>(null);
         static BackgroundTest current;
+        static boolean workerRequired;
+        private WebView worker;
+        private int noticeSequence;
         private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
         private android.os.PowerManager.WakeLock cpu;
         private String token;
@@ -355,6 +369,11 @@ public final class MainActivity extends Activity {
             cpu.acquire(125000);
             handler.postDelayed(() -> {
                 MainActivity page = owner.get();
+                if (scheduled && (workerRequired || page == null || page.isFinishing() || page.isDestroyed())) {
+                    workerRequired = true;
+                    openWorker();
+                    return;
+                }
                 if (page == null || page.isFinishing() || page.isDestroyed()) {
                     finish("App 页面已关闭，测试结束");
                     return;
@@ -373,11 +392,76 @@ public final class MainActivity extends Activity {
             return START_NOT_STICKY;
         }
 
+        public final class WorkerBridge {
+            @JavascriptInterface public boolean isAlarmWorker() { return true; }
+            @JavascriptInterface public boolean isAppInForeground() { return false; }
+            @JavascriptInterface public String getAlarmChat() { return chat; }
+            @JavascriptInterface public String getAlarmToken() { return token; }
+            @JavascriptInterface public String permission() {
+                return notifications.areNotificationsEnabled() ? "granted" : "denied";
+            }
+            @JavascriptInterface public void show(String title, String body, String chatId) {
+                handler.post(() -> {
+                    if (current != BackgroundTest.this || !chat.equals(chatId)
+                            || !notifications.areNotificationsEnabled()) return;
+                    int notificationId = (int) ((System.currentTimeMillis() + ++noticeSequence) & Integer.MAX_VALUE);
+                    Intent open = new Intent(BackgroundTest.this, MainActivity.class).putExtra("chatId", chat);
+                    PendingIntent tap = PendingIntent.getActivity(BackgroundTest.this, notificationId, open,
+                        PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                    notifications.notify(notificationId, new Notification.Builder(BackgroundTest.this, MainActivity.CHANNEL)
+                        .setContentTitle(title).setContentText(body).setSmallIcon(android.R.drawable.ic_dialog_email)
+                        .setStyle(new Notification.BigTextStyle().bigText(body))
+                        .setContentIntent(tap).setAutoCancel(true).build());
+                });
+            }
+            @JavascriptInterface public void finishBackgroundTest(String id, String status) {
+                if (token != null && token.equals(id)) handler.post(() -> {
+                    if (current == BackgroundTest.this) finish(null);
+                });
+            }
+        }
+
+        private void openWorker() {
+            notifications.createNotificationChannel(new NotificationChannel(MainActivity.CHANNEL,
+                "角色新消息", NotificationManager.IMPORTANCE_HIGH));
+            worker = new WebView(this);
+            worker.getSettings().setJavaScriptEnabled(true);
+            worker.getSettings().setDomStorageEnabled(true);
+            worker.getSettings().setAllowFileAccess(false);
+            worker.getSettings().setAllowContentAccess(false);
+            worker.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+            worker.addJavascriptInterface(new WorkerBridge(), "MouxiAndroid");
+            worker.setWebViewClient(new WebViewClient() {
+                @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
+                    if (!local(req.getUrl()) && req.isForMainFrame()) return missing();
+                    WebResourceResponse response = readLocalAsset(BackgroundTest.this, req.getUrl());
+                    if (req.isForMainFrame() && response != null) response.setResponseHeaders(
+                        java.util.Collections.singletonMap("Content-Security-Policy", "frame-src 'none'; object-src 'none'"));
+                    return response;
+                }
+                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                    return true;
+                }
+            });
+            worker.loadUrl(ROOT + "index.html");
+        }
+
         private void cleanUp() {
             handler.removeCallbacksAndMessages(null);
             if (cpu != null && cpu.isHeld()) cpu.release();
             if (token != null && token.equals(active.get())) active.set(null);
-            if (current == this) current = null;
+            if (worker != null) {
+                worker.destroy();
+                worker = null;
+            }
+            if (current == this) {
+                current = null;
+                if (workerRequired) {
+                    workerRequired = false;
+                    MainActivity page = owner.get();
+                    if (page != null && !page.pageReady) page.loadVisiblePage();
+                }
+            }
         }
 
         void finish(String message) {

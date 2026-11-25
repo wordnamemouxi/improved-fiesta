@@ -1,0 +1,20 @@
+name: Build Mouxi Android APK
+on:
+  push:
+    branches: [android-apk-build]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and verify installable APK
+        run: bash android-apk/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mouxi-Android-0.1.0
+          path: dist/Mouxi-Android-0.1.0.apk
+          if-no-files-found: error

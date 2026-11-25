@@ -4582,7 +4582,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                 const type = callInviteMatch[3] === '视频' ? 'video' : 'voice';
                 // 触发来电界面
                 if (window.VideoCallModule && typeof window.VideoCallModule.receiveCall === 'function') {
-                    window.VideoCallModule.receiveCall(type);
+                    window.VideoCallModule.receiveCall(type, targetChatId, targetChatType);
                 }
                 // 不将此消息显示为普通气泡，或者显示为系统通知
                 // 这里选择显示为系统通知样式的消息

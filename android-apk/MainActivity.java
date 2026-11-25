@@ -109,6 +109,7 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         foreground = true;
+        if (pageReady) web.evaluateJavascript("window.syncMouxiCharacterAlarms?.()", null);
     }
 
     @Override protected void onPause() {
@@ -185,6 +186,43 @@ public final class MainActivity extends Activity {
                 } else web.evaluateJavascript("window.finishMouxiNotificationPermission?.()", null);
             });
         }
+        @JavascriptInterface public boolean canScheduleCharacterAlarms() {
+            return Build.VERSION.SDK_INT < 31 || getSystemService(AlarmManager.class).canScheduleExactAlarms();
+        }
+
+        @JavascriptInterface public void openAlarmSettings() {
+            if (Build.VERSION.SDK_INT >= 31) runOnUiThread(() -> {
+                if (!foreground) return;
+                try {
+                    startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                        Uri.parse("package:" + getPackageName())));
+                } catch (ActivityNotFoundException ignored) {}
+            });
+        }
+
+        @JavascriptInterface public boolean scheduleCharacterAlarm(String chatId, String timestamp) {
+            if (!canScheduleCharacterAlarms() || chatId == null || chatId.isEmpty() || chatId.length() > 512) return false;
+            try {
+                long due = Long.parseLong(timestamp);
+                long now = System.currentTimeMillis();
+                if (due <= 0 || due > now + 172800000L + 60000) return false;
+                CharacterAlarm.schedule(MainActivity.this, chatId, timestamp, Math.max(due, now + 1000));
+                return true;
+            } catch (RuntimeException error) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface public void cancelCharacterAlarm(String chatId) {
+            if (chatId != null && !chatId.isEmpty() && chatId.length() <= 512) {
+                PendingIntent alarm = CharacterAlarm.intent(MainActivity.this, chatId, "", PendingIntent.FLAG_NO_CREATE);
+                if (alarm != null) {
+                    getSystemService(AlarmManager.class).cancel(alarm);
+                    alarm.cancel();
+                }
+            }
+        }
+
         @JavascriptInterface public boolean startBackgroundTest(String chatId, String token) {
             if (!"granted".equals(permission()) || chatId == null || chatId.length() > 512
                     || token == null || !token.matches("[0-9]{1,20}")
@@ -236,6 +274,42 @@ public final class MainActivity extends Activity {
         }
     }
 
+
+    public static final class CharacterAlarm extends BroadcastReceiver {
+        static PendingIntent intent(Context context, String chat, String token, int mode) {
+            Intent alarm = new Intent(context, CharacterAlarm.class)
+                .setData(new Uri.Builder().scheme("mouxi").authority("character-alarm").appendPath(chat).build())
+                .putExtra("chat", chat).putExtra("token", token);
+            return PendingIntent.getBroadcast(context, 0, alarm, mode | PendingIntent.FLAG_IMMUTABLE);
+        }
+
+        static void schedule(Context context, String chat, String token, long at) {
+            context.getSystemService(AlarmManager.class).setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP, at, intent(context, chat, token, PendingIntent.FLAG_UPDATE_CURRENT));
+        }
+
+        @Override public void onReceive(Context context, Intent message) {
+            MainActivity page = BackgroundTest.owner.get();
+            if (page == null || page.isDestroyed() || page.isFinishing()) return;
+            String chat = message.getStringExtra("chat");
+            String token = message.getStringExtra("token");
+            if (chat == null || token == null) return;
+            if (!BackgroundTest.active.compareAndSet(null, token)) {
+                long now = System.currentTimeMillis();
+                try {
+                    if (now - Long.parseLong(token) < 180000L) schedule(context, chat, token, now + 45000L);
+                } catch (RuntimeException ignored) {}
+                return;
+            }
+            try {
+                context.startForegroundService(new Intent(context, BackgroundTest.class)
+                    .putExtra("chat", chat).putExtra("token", token).putExtra("scheduled", true));
+            } catch (RuntimeException error) {
+                BackgroundTest.active.compareAndSet(token, null);
+            }
+        }
+    }
+
     public static final class BackgroundTest extends Service {
         private static final String CHANNEL = "background_test";
         private static final int RUNNING_ID = 28102;
@@ -248,13 +322,14 @@ public final class MainActivity extends Activity {
         private android.os.PowerManager.WakeLock cpu;
         private String token;
         private String chat;
+        private boolean scheduled;
         private NotificationManager notifications;
 
         private Notification note(String message, boolean running) {
             Intent tap = new Intent(this, MainActivity.class).putExtra("chatId", chat)
                 .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             return new Notification.Builder(this, CHANNEL)
-                .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("某昔专线 · 后台生成测试")
+                .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(scheduled ? "某昔专线 · 主动消息" : "某昔专线 · 后台生成测试")
                 .setContentText(message).setStyle(new Notification.BigTextStyle().bigText(message))
                 .setOnlyAlertOnce(true).setOngoing(running).setAutoCancel(!running)
                 .setContentIntent(PendingIntent.getActivity(this, RESULT_ID, tap,
@@ -268,7 +343,8 @@ public final class MainActivity extends Activity {
             notifications = getSystemService(NotificationManager.class);
             notifications.createNotificationChannel(new NotificationChannel(CHANNEL,
                 "后台生成测试", NotificationManager.IMPORTANCE_DEFAULT));
-            Notification waiting = note("已预约，30 秒后发起一次生成", true);
+            scheduled = intent.getBooleanExtra("scheduled", false);
+            Notification waiting = note(scheduled ? "正在生成角色约好的消息" : "已预约，30 秒后发起一次生成", true);
             if (Build.VERSION.SDK_INT >= 34) startForeground(RUNNING_ID, waiting,
                 android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE);
             else startForeground(RUNNING_ID, waiting);
@@ -284,14 +360,15 @@ public final class MainActivity extends Activity {
                     return;
                 }
                 notifications.notify(RUNNING_ID, note("已到点，正在等待模型生成结果", true));
-                page.web.evaluateJavascript("window.runMouxiBackgroundTest?.("
+                String callback = scheduled ? "window.runMouxiScheduledReply" : "window.runMouxiBackgroundTest";
+                page.web.evaluateJavascript(callback + "?.("
                     + JSONObject.quote(chat) + "," + JSONObject.quote(token) + ")", null);
-            }, 30000);
+            }, scheduled ? 0 : 30000);
             handler.postDelayed(() -> {
                 MainActivity page = owner.get();
-                if (page != null && !page.isDestroyed()) page.web.evaluateJavascript(
+                if (!scheduled && page != null && !page.isDestroyed()) page.web.evaluateJavascript(
                     "window.expireMouxiBackgroundTest?.(" + JSONObject.quote(chat) + "," + JSONObject.quote(token) + ")", null);
-                finish("已到点，但未收到生成结果。页面可能暂停，或模型接口请求超时");
+                finish(scheduled ? null : "已到点，但未收到生成结果。页面可能暂停，或模型接口请求超时");
             }, 120000);
             return START_NOT_STICKY;
         }

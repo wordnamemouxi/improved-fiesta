@@ -72,11 +72,32 @@
         return cnt;
     }
 
+    const androidAlarms = new Map();
+
+    function syncAndroidAlarm(chat) {
+        const bridge = window.MouxiAndroid;
+        if (!bridge?.scheduleCharacterAlarm || !chat?.id) return;
+        const due = chat.autoReply?.smartEnabled ? Number(chat.autoReply.nextPingAt) : 0;
+        if (!(due > 0)) {
+            bridge.cancelCharacterAlarm(String(chat.id));
+            androidAlarms.delete(chat.id);
+            return;
+        }
+        if (androidAlarms.get(chat.id) === due) return;
+        if (bridge.scheduleCharacterAlarm(String(chat.id), String(due))) androidAlarms.set(chat.id, due);
+    }
+
+    window.syncMouxiCharacterAlarms = () => {
+        androidAlarms.clear();
+        for (const chat of window.db?.characters || []) syncAndroidAlarm(chat);
+    };
+
     function clearSmartSchedule(char) {
         if (!char?.autoReply) return;
         char.autoReply.nextPingAt = 0;
         char.autoReply.nextPingReason = '';
         char.autoReply.nextPingSetAt = 0;
+        syncAndroidAlarm(char);
     }
 
     function refreshTest30sBtn() {
@@ -199,7 +220,9 @@
                     pendingReasonMap.delete(chat.id);
                     extra.push(`[本次主动发消息由头] 你之前心里惦记着“${pendingReason}”，现在时间到了自然顺口来找对方聊两句（像真人想起这事一样自然，别生硬照念）。`);
                 }
-                extra.push('[智慧主动消息排程] 请结合刚才的聊天内容与当前客观时间，自然判断如果对方接下来没主动回你，你大概多少分钟后会再主动找她（以及简短理由）。请在正文最末尾附隐藏标签 [NEXT_PING:分钟数|简短理由]（例如刚说去洗澡可约25分钟、深夜互道晚安可约480分钟到明早、普通日常约120到240分钟；只写整数分钟）。');
+                if (window.MouxiAndroid?.scheduleCharacterAlarm) {
+                    extra.push('[智慧主动消息排程] 可选：仅当有自然的后续话题、且本次是在回复用户的新消息时，才在正文结尾附 [NEXT_PING:分钟数|简短理由]。普通闲聊和主动联系结束时可省略。');
+                } else extra.push('[智慧主动消息排程] 请结合刚才的聊天内容与当前客观时间，自然判断如果对方接下来没主动回你，你大概多少分钟后会再主动找她（以及简短理由）。请在正文最末尾附隐藏标签 [NEXT_PING:分钟数|简短理由]（例如刚说去洗澡可约25分钟、深夜互道晚安可约480分钟到明早、普通日常约120到240分钟；只写整数分钟）。');
             }
             if (extra.length) {
                 note = note ? `${note}\n${extra.join('\n')}` : extra.join('\n');
@@ -224,7 +247,7 @@
                 let body = thinkEnd !== -1 ? cleaned.slice(thinkEnd + 11) : cleaned;
 
                 const pingMatch = body.match(/\[NEXT_PING:(\d{1,4})(?:\|([^\]]*))?\]/i);
-                if (pingMatch) {
+                if (pingMatch && (!isBackground || !window.MouxiAndroid?.scheduleCharacterAlarm)) {
                     const rawMins = Number.parseInt(pingMatch[1], 10);
                     const mins = Math.max(MIN_MINUTES, Math.min(MAX_MINUTES, Number.isFinite(rawMins) ? rawMins : 90));
                     const reason = (pingMatch[2] || '').trim().slice(0, 60);
@@ -233,11 +256,13 @@
                     chat.autoReply.nextPingAt = now + mins * 60 * 1000;
                     chat.autoReply.nextPingReason = reason;
                     chat.autoReply.nextPingSetAt = Math.max(now, getLastUserTimestamp(chat));
-                    body = body.replace(/\[NEXT_PING:[^\]]+\]/gi, '').trim();
-                    cleaned = head + body;
                 }
+                body = body.replace(/\[NEXT_PING:[^\]]+\]/gi, '').trim();
+                cleaned = head + body;
             }
-            return origHandle.call(this, cleaned, chat, targetChatId, targetChatType, isBackground);
+            const result = await origHandle.call(this, cleaned, chat, targetChatId, targetChatType, isBackground);
+            if (targetChatType === 'private') syncAndroidAlarm(chat);
+            return result;
         };
         wrapped.__smartWrapped = true;
         window.handleAiReplyContent = wrapped;
@@ -267,11 +292,12 @@
     function hookCheckAutoReply() {
         if (hookedCheckAuto || typeof window.checkAutoReply !== 'function') return;
         hookedCheckAuto = true;
-        const wrapped = async function () {
+        const wrapped = async function (onlyChatId) {
             if (!window.db?.characters) return;
             const now = Date.now();
 
             for (const char of window.db.characters) {
+                if (onlyChatId && String(char.id) !== onlyChatId) continue;
                 const ar = char.autoReply;
                 if (!ar || (!ar.enabled && !ar.smartEnabled)) continue;
                 if (!Array.isArray(char.history) || char.history.length === 0) continue;
@@ -296,18 +322,18 @@
                     const beforeAssistantCount = countAssistantMessages(char);
 
                     inFlightPingIds.add(char.id);
-                    // 并发异步执行该角色的后台请求，不阻塞循环中其他角色的检查
-                    (async () => {
+                    const job = (async () => {
                         try {
                             clearSmartSchedule(char);
                             ar.lastTriggerTime = now;
+                            if (onlyChatId) await saveChatQuick(char);
                             if (prevReason) pendingReasonMap.set(char.id, prevReason);
                             console.log(`[SmartAutoReply] Dynamic ping triggered for ${char.remarkName || char.realName}: ${prevReason || 'natural check-in'}`);
                             if (typeof window.getAiReply === 'function') {
                                 await window.getAiReply(char.id, 'private', true);
                             }
                             const afterAssistantCount = countAssistantMessages(char);
-                            if (afterAssistantCount <= beforeAssistantCount) {
+                            if (afterAssistantCount <= beforeAssistantCount && !onlyChatId) {
                                 ar.nextPingAt = Date.now() + 2 * 60 * 1000;
                                 ar.nextPingReason = prevReason;
                                 ar.nextPingSetAt = prevSetAt;
@@ -315,20 +341,24 @@
                                 await saveChatQuick(char).catch(() => {});
                             }
                         } catch (err) {
-                            ar.nextPingAt = Math.max(prevPingAt, Date.now() + 2 * 60 * 1000);
-                            ar.nextPingReason = prevReason;
-                            ar.nextPingSetAt = prevSetAt;
-                            console.warn(`[SmartAutoReply] Ping failed for ${char.remarkName || char.realName}, restored schedule:`, err);
+                            if (!onlyChatId) {
+                                ar.nextPingAt = Math.max(prevPingAt, Date.now() + 2 * 60 * 1000);
+                                ar.nextPingReason = prevReason;
+                                ar.nextPingSetAt = prevSetAt;
+                            }
+                            console.warn(`[SmartAutoReply] Ping failed for ${char.remarkName || char.realName}, request failed:`, err);
                             await saveChatQuick(char).catch(() => {});
                         } finally {
                             inFlightPingIds.delete(char.id);
+                            syncAndroidAlarm(char);
                         }
                     })();
+                    if (onlyChatId) await job;
                     continue;
                 }
 
                 // 路径 B：固定间隔基础兜底
-                if (ar.enabled) {
+                if (ar.enabled && !onlyChatId) {
                     const intervalMs = (ar.interval || 60) * 60 * 1000;
                     const lastTriggerTime = ar.lastTriggerTime || 0;
                     if (now - lastTriggerTime < intervalMs) continue;
@@ -353,6 +383,21 @@
         wrapped.__smartWrapped = true;
         window.checkAutoReply = wrapped;
     }
+
+    window.runMouxiScheduledReply = async (chatId, token) => {
+        try {
+            const chat = window.db?.characters?.find(item => String(item.id) === chatId);
+            if (chat?.autoReply?.smartEnabled && String(chat.autoReply.nextPingAt) === token
+                && !inFlightPingIds.has(chat.id) && Number(token) <= Date.now()) {
+                await window.checkAutoReply(chatId);
+                await saveChatQuick(chat);
+            }
+        } catch (error) {
+            console.warn('[SmartAutoReply] Android schedule failed:', error);
+        } finally {
+            window.MouxiAndroid?.finishBackgroundTest(token, 'scheduled');
+        }
+    };
 
     let hookedInjectSettings = false;
     function hookInjectChatSettingsHtml() {
@@ -471,6 +516,19 @@
 
         anchor.parentElement.insertBefore(card, anchor.nextSibling);
 
+        if (window.MouxiAndroid?.openAlarmSettings) {
+            const settings = document.createElement('button');
+            settings.type = 'button';
+            settings.textContent = '允许锁屏主动消息';
+            settings.style.cssText = 'margin-top:6px;padding:4px 8px;font-size:11px;border:1px solid #d0d7de;border-radius:6px;background:#fff;color:#333';
+            settings.addEventListener('click', () => {
+                if (window.MouxiAndroid.canScheduleCharacterAlarms()) {
+                    window.syncMouxiCharacterAlarms();
+                    window.showToast?.('已允许锁屏预约，未来的有效预约会交给安卓计时');
+                } else window.MouxiAndroid.openAlarmSettings();
+            });
+            card.appendChild(settings);
+        }
         const swInput = document.getElementById('setting-smart-auto-reply-enabled');
         swInput.addEventListener('change', async () => {
             if (typeof currentChatId === 'undefined' || !window.db?.characters) return;

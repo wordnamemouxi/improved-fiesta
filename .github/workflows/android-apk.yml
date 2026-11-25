@@ -11,10 +11,10 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - name: Build and verify installable APK
+      - name: Build aligned APK for local signing
         run: bash android-apk/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: Mouxi-Android-0.1.0
-          path: dist/Mouxi-Android-0.1.0.apk
+          name: Mouxi-Android-signing-input-0.1.1
+          path: dist/
           if-no-files-found: error

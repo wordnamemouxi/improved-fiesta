@@ -29,9 +29,9 @@ jar cf apk-work/classes.jar -C apk-work/classes .
 "$tools/d8" --lib "$platform" --min-api 26 --output apk-work/dex apk-work/classes.jar
 (cd apk-work/dex && zip -q ../unsigned.apk classes.dex)
 "$tools/zipalign" -f 4 apk-work/unsigned.apk apk-work/aligned.apk
-keytool -genkeypair -keystore apk-work/test.keystore -storepass android -keypass android -alias testkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Mouxi Test"
-"$tools/apksigner" sign --ks apk-work/test.keystore --ks-pass pass:android --key-pass pass:android --out dist/Mouxi-Android-0.1.0.apk apk-work/aligned.apk
-"$tools/apksigner" verify --verbose dist/Mouxi-Android-0.1.0.apk
-"$tools/aapt2" dump badging dist/Mouxi-Android-0.1.0.apk | sed -n '1,15p'
-unzip -tq dist/Mouxi-Android-0.1.0.apk
-sha256sum dist/Mouxi-Android-0.1.0.apk
+cp apk-work/aligned.apk dist/Mouxi-Android-0.1.1-unsigned.apk
+cp "$tools/lib/apksigner.jar" dist/apksigner.jar
+"$tools/zipalign" -c 4 dist/Mouxi-Android-0.1.1-unsigned.apk
+"$tools/aapt2" dump badging dist/Mouxi-Android-0.1.1-unsigned.apk | sed -n '1,15p'
+unzip -tq dist/Mouxi-Android-0.1.1-unsigned.apk
+sha256sum dist/*

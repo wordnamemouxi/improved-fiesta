@@ -19,6 +19,7 @@
 
     function isWebPageInForeground() {
         try {
+            if (window.MouxiAndroid?.isAppInForeground) return window.MouxiAndroid.isAppInForeground();
             if (document.visibilityState === 'visible') return true;
         } catch (e) {}
         return false;

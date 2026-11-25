@@ -21,6 +21,7 @@ public final class MainActivity extends Activity {
     private PermissionRequest microphone;
     private int nextNotificationId = (int) (System.currentTimeMillis() & Integer.MAX_VALUE);
     private boolean pageReady;
+    private volatile boolean foreground;
     private String pendingChat = "";
 
     private boolean local(Uri uri) {
@@ -105,6 +106,16 @@ public final class MainActivity extends Activity {
         web.loadUrl(ROOT + "index.html" + (chat == null || chat.isEmpty() ? "" : "?openChat=" + Uri.encode(chat)));
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        foreground = true;
+    }
+
+    @Override protected void onPause() {
+        foreground = false;
+        super.onPause();
+    }
+
     private WebResourceResponse missing() {
         return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found",
             java.util.Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
@@ -155,6 +166,16 @@ public final class MainActivity extends Activity {
     }
 
     private final class NativeBridge {
+        @JavascriptInterface public boolean isAppInForeground() { return foreground; }
+
+        @JavascriptInterface public boolean beginManualGeneration(String token) {
+            return foreground && ManualGeneration.begin(MainActivity.this, token);
+        }
+
+        @JavascriptInterface public void endManualGeneration(String token) {
+            ManualGeneration.complete(token);
+        }
+
         @JavascriptInterface public String permission() { return MainActivity.this.permission(); }
         @JavascriptInterface public void askPermission() {
             runOnUiThread(() -> {
@@ -290,6 +311,98 @@ public final class MainActivity extends Activity {
         }
 
         @Override public void onDestroy() { cleanUp(); super.onDestroy(); }
+        @Override public android.os.IBinder onBind(Intent intent) { return null; }
+    }
+
+    public static final class ManualGeneration extends Service {
+        private static final String CHANNEL = "manual_generation";
+        private static final int NOTICE = 28110;
+        private static final long TIME_LIMIT = 150000;
+        private static final java.util.Set<String> jobs = new java.util.HashSet<>();
+        private static final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+        private static ManualGeneration active;
+        private android.os.PowerManager.WakeLock cpu;
+        private final Runnable timeout = () -> {
+            synchronized (jobs) {
+                jobs.clear();
+                stopRunning();
+            }
+        };
+
+        static boolean begin(Context context, String token) {
+            if (token == null || token.length() > 80) return false;
+            synchronized (jobs) {
+                if (!jobs.add(token)) return false;
+                if (jobs.size() > 1) return true;
+                try {
+                    context.startForegroundService(new Intent(context, ManualGeneration.class));
+                    return true;
+                } catch (RuntimeException error) {
+                    jobs.remove(token);
+                    return false;
+                }
+            }
+        }
+
+        static void complete(String token) {
+            main.post(() -> {
+                synchronized (jobs) {
+                    if (jobs.remove(token) && jobs.isEmpty() && active != null) {
+                        active.stopRunning();
+                    }
+                }
+            });
+        }
+
+        @Override public int onStartCommand(Intent intent, int flags, int startId) {
+            synchronized (jobs) {
+                NotificationManager manager = getSystemService(NotificationManager.class);
+                manager.createNotificationChannel(new NotificationChannel(CHANNEL, "正在生成回复",
+                    NotificationManager.IMPORTANCE_LOW));
+                Intent open = new Intent(this, MainActivity.class)
+                    .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                Notification notice = new Notification.Builder(this, CHANNEL)
+                    .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("某昔专线")
+                    .setContentText("正在生成你刚请求的回复").setOngoing(true).setOnlyAlertOnce(true)
+                    .setContentIntent(PendingIntent.getActivity(this, NOTICE, open,
+                        PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT)).build();
+                if (Build.VERSION.SDK_INT >= 34) startForeground(NOTICE, notice,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE);
+                else startForeground(NOTICE, notice);
+                active = this;
+                if (jobs.isEmpty()) { stopRunning(); return START_NOT_STICKY; }
+                if (cpu == null) {
+                    cpu = getSystemService(android.os.PowerManager.class).newWakeLock(
+                        android.os.PowerManager.PARTIAL_WAKE_LOCK, "mouxi:manual-generation");
+                    cpu.setReferenceCounted(false);
+                }
+                cpu.acquire(TIME_LIMIT + 5000);
+                main.removeCallbacks(timeout);
+                main.postDelayed(timeout, TIME_LIMIT);
+                return START_NOT_STICKY;
+            }
+        }
+
+        private void release() {
+            main.removeCallbacks(timeout);
+            if (cpu != null && cpu.isHeld()) cpu.release();
+            if (active == this) active = null;
+        }
+
+        private void stopRunning() {
+            release();
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopSelf();
+        }
+
+        @Override public void onDestroy() {
+            synchronized (jobs) {
+                if (active == this) jobs.clear();
+                release();
+            }
+            super.onDestroy();
+        }
+
         @Override public android.os.IBinder onBind(Intent intent) { return null; }
     }
 }

@@ -21,6 +21,14 @@ if needle in s:
     p.write_text(s.replace(needle, needle + "\n        if (window.MouxiAndroid) return null;", 1))
 else:
     raise ValueError('Missing notification registration integration point')
+p = Path('apk-work/assets/web/js/05-chat-ai.js')
+s = p.read_text()
+for old, new in [["const __uwuInFlightChatIds = new Set();","const __uwuInFlightChatIds = new Set();\nlet androidGenerationSequence = 0;"],["    try {\n        let systemPrompt, requestBody, preparedMemory;","    let androidGenerationToken;\n    try {\n        if (!isBackground && window.MouxiAndroid?.beginManualGeneration) {\n            const token = `${Date.now()}-${++androidGenerationSequence}`;\n            try {\n                if (window.MouxiAndroid.beginManualGeneration(token)) androidGenerationToken = token;\n                else showToast('安卓后台保护未启动，当前请求仍会正常发出');\n            } catch (error) {\n                console.warn('Could not keep Android generation active:', error);\n            }\n        }\n        let systemPrompt, requestBody, preparedMemory;"],["        __uwuInFlightChatIds.delete(chatId);","        if (androidGenerationToken) {\n            try { window.MouxiAndroid.endManualGeneration(androidGenerationToken); }\n            catch (error) { console.warn('Android generation cleanup failed:', error); }\n        }\n        __uwuInFlightChatIds.delete(chatId);"]]:
+    if s.count(old) != 1:
+        raise ValueError('Manual generation patch anchor changed')
+    s = s.replace(old, new, 1)
+p.write_text(s)
+
 PY
 "$tools/aapt2" compile --dir apk-work/res -o apk-work/resources.zip
 "$tools/aapt2" link -o apk-work/unsigned.apk -I "$platform" --manifest android-apk/AndroidManifest.xml -A apk-work/assets apk-work/resources.zip
@@ -29,9 +37,9 @@ jar cf apk-work/classes.jar -C apk-work/classes .
 "$tools/d8" --lib "$platform" --min-api 26 --output apk-work/dex apk-work/classes.jar
 (cd apk-work/dex && zip -q ../unsigned.apk classes.dex)
 "$tools/zipalign" -f 4 apk-work/unsigned.apk apk-work/aligned.apk
-cp apk-work/aligned.apk dist/Mouxi-Android-0.1.2-unsigned.apk
+cp apk-work/aligned.apk dist/Mouxi-Android-0.1.3-unsigned.apk
 cp "$tools/lib/apksigner.jar" dist/apksigner.jar
-"$tools/zipalign" -c 4 dist/Mouxi-Android-0.1.2-unsigned.apk
-"$tools/aapt2" dump badging dist/Mouxi-Android-0.1.2-unsigned.apk | sed -n '1,15p'
-unzip -tq dist/Mouxi-Android-0.1.2-unsigned.apk
+"$tools/zipalign" -c 4 dist/Mouxi-Android-0.1.3-unsigned.apk
+"$tools/aapt2" dump badging dist/Mouxi-Android-0.1.3-unsigned.apk | sed -n '1,15p'
+unzip -tq dist/Mouxi-Android-0.1.3-unsigned.apk
 sha256sum dist/*

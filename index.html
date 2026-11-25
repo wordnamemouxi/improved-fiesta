@@ -16307,6 +16307,17 @@ textarea.mp-transparent-input {
         </div>
     </div>
 
+    <div id="peek-load-overlay" class="action-sheet-overlay">
+        <section class="action-sheet" role="dialog" aria-modal="true" aria-labelledby="peek-load-title">
+            <h2 id="peek-load-title" style="margin:0;color:#333;font-size:17px;">查手机与动态</h2>
+            <p id="peek-load-status" role="status" style="margin:0;color:#444;font-size:14px;">正在连接…</p>
+            <progress id="peek-load-progress" max="100" aria-label="模块下载进度" style="width:100%;height:10px;"></progress>
+            <div id="peek-load-bytes" style="min-height:18px;color:#666;font-size:13px;font-variant-numeric:tabular-nums;"></div>
+            <button type="button" id="peek-load-retry" class="action-sheet-button" hidden>重试</button>
+            <button type="button" id="peek-load-close" class="action-sheet-button">关闭</button>
+        </section>
+    </div>
+
     <!-- Peek Action Sheet -->
     <div id="peek-actionsheet" class="action-sheet-overlay">
         <div class="action-sheet">
@@ -17323,7 +17334,7 @@ textarea.mp-transparent-input {
  <!-- 阅读器视图逻辑 -->
 
 <!-- [4. 程序入口] -->
-<script src="./js/12-main.js?v=20261124-peek"></script>     <!-- 主入口：初始化(init)、全局事件监听 -->
+<script src="./js/12-main.js?v=20261125-peek-progress"></script>     <!-- 主入口：初始化(init)、全局事件监听 -->
     <script src="./plugins/avatar-poke.js?v=20261121"></script>
     <script>
         if ('serviceWorker' in navigator) {

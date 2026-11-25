@@ -303,29 +303,89 @@ function showGlobalRescuePanel() {
     };
 }
 
-// 首次打开私聊「查手机」时加载模块，失败后允许再次点击重试。
+// 私聊首次打开「查手机／动态」时再下载，下载后复用同一个模块。
+const PEEK_SCRIPT_URL = './js/09-peek-phone.js?v=20261121';
+const PEEK_SCRIPT_BYTES = 9157168;
 let peekFeatureLoad = null;
 
-function loadPeekFeature() {
-    if (peekFeatureLoad) return peekFeatureLoad;
-
-    peekFeatureLoad = (async () => {
-        if (typeof setupPeekFeature !== 'function') {
-            await new Promise((resolve, reject) => {
-                const script = document.createElement('script');
-                script.src = './js/09-peek-phone.js?v=20261121';
-                script.onload = resolve;
-                script.onerror = () => {
-                    script.remove();
-                    reject(new Error('查手机脚本下载失败'));
-                };
-                document.head.appendChild(script);
-            });
+async function downloadPeekModule(onProgress) {
+    const controller = new AbortController();
+    let idleTimer;
+    const resetIdleTimer = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => controller.abort(), 25000);
+    };
+    resetIdleTimer();
+    try {
+        const response = await fetch(PEEK_SCRIPT_URL, { signal: controller.signal });
+        if (!response.ok) throw new Error(`下载失败（HTTP ${response.status}）`);
+        if (response.headers.get('content-type')?.includes('text/html')) throw new Error('服务器未返回模块文件');
+        resetIdleTimer();
+        if (!response.body?.getReader) {
+            const blob = await response.blob();
+            return new Blob([blob], { type: 'text/javascript' });
         }
 
+        // Fetch 读取的是解压后的内容，带压缩的响应头大小不能作为分母。
+        const encoding = response.headers.get('content-encoding');
+        const contentLength = !encoding || encoding === 'identity' ? Number(response.headers.get('content-length')) : 0;
+        const total = contentLength > 0 ? contentLength : PEEK_SCRIPT_BYTES;
+        const reader = response.body.getReader();
+        const chunks = [];
+        let received = 0;
+        onProgress(received, total);
+        try {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                resetIdleTimer();
+                chunks.push(value);
+                received += value.byteLength;
+                onProgress(received, total);
+            }
+        } finally {
+            reader.releaseLock();
+        }
+        return new Blob(chunks, { type: 'text/javascript' });
+    } catch (error) {
+        if (controller.signal.aborted) throw new Error('下载超过 25 秒没有进展，请重试');
+        if (error instanceof TypeError) throw new Error('网络连接中断，请重试');
+        throw error;
+    } finally {
+        clearTimeout(idleTimer);
+    }
+}
+
+function executePeekModule(blob) {
+    const url = URL.createObjectURL(blob);
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = url;
+        script.onload = resolve;
+        script.onerror = () => {
+            script.remove();
+            reject(new Error('已下载，但浏览器无法运行模块'));
+        };
+        document.head.appendChild(script);
+    }).finally(() => URL.revokeObjectURL(url));
+}
+
+function loadPeekFeature(update) {
+    if (peekFeatureLoad) return peekFeatureLoad;
+    peekFeatureLoad = (async () => {
+        if (typeof setupPeekFeature !== 'function') {
+            update('正在连接…');
+            const blob = await downloadPeekModule((received, total) => {
+                update('正在下载模块…', received, total);
+            });
+            update('下载完成，正在初始化…');
+            await executePeekModule(blob);
+        } else {
+            update('正在初始化…');
+        }
         if (typeof setupPeekFeature !== 'function' || typeof renderPeekScreen !== 'function'
             || typeof renderMomentsScreen !== 'function') {
-            throw new Error('查手机模块没有完成加载');
+            throw new Error('已下载，但模块初始化未完成');
         }
         await setupPeekFeature();
         window.__uwuPeekFeatureReady = true;
@@ -337,26 +397,74 @@ function loadPeekFeature() {
 }
 
 function setupPeekDelegationFallback() {
-    let openRequest = 0;
-    document.addEventListener('click', async event => {
-        if (!event.target?.closest?.('#peek-btn') || currentChatType === 'group') return;
-        const chatId = currentChatId;
-        if (!db.characters.some(chat => chat.id === chatId)) return;
-        if (currentChatType !== 'private') currentChatType = 'private';
+    const overlay = document.getElementById('peek-load-overlay');
+    const menu = document.getElementById('peek-actionsheet');
+    const status = document.getElementById('peek-load-status');
+    const progress = document.getElementById('peek-load-progress');
+    const bytes = document.getElementById('peek-load-bytes');
+    const retry = document.getElementById('peek-load-retry');
+    const close = document.getElementById('peek-load-close');
+    let request = 0;
+    const formatMB = amount => (amount / 1024 / 1024).toFixed(2) + ' MB';
 
-        const request = ++openRequest;
-        if (!window.__uwuPeekFeatureReady) {
-            if (!peekFeatureLoad) showToast('正在加载查手机…');
-            try {
-                await loadPeekFeature();
-            } catch (error) {
-                if (request === openRequest) showToast('查手机加载失败，点击可重试');
-                console.warn('[Peek] Could not load phone module:', error);
+    function setProgress(message, received, total) {
+        if (status.textContent !== message) status.textContent = message;
+        progress.hidden = false;
+        retry.hidden = true;
+        if (total) {
+            progress.value = Math.min(99, Math.floor(received * 100 / total));
+            bytes.textContent = `${progress.value}% · ${formatMB(received)} / ${formatMB(Math.max(total, received))}`;
+        } else {
+            progress.removeAttribute('value');
+            bytes.textContent = '';
+        }
+    }
+
+    function hideLoader() {
+        request++;
+        overlay.classList.remove('visible');
+    }
+
+    async function openPeek() {
+        const chatId = currentChatId;
+        if (currentChatType === 'group' || !db.characters.some(chat => chat.id === chatId)
+            || !document.getElementById('chat-room-screen')?.classList.contains('active')) return;
+        if (currentChatType !== 'private') currentChatType = 'private';
+        if (window.__uwuPeekFeatureReady) {
+            hideLoader();
+            menu.classList.add('visible');
+            return;
+        }
+
+        const isSameChat = () => currentChatId === chatId && currentChatType === 'private'
+            && document.getElementById('chat-room-screen')?.classList.contains('active');
+        const activeRequest = ++request;
+        overlay.classList.add('visible');
+        try {
+            await loadPeekFeature(setProgress);
+        } catch (error) {
+            if (activeRequest !== request) return;
+            if (!isSameChat()) {
+                hideLoader();
                 return;
             }
+            status.textContent = error.message || '加载失败，请重试';
+            progress.hidden = true;
+            bytes.textContent = '';
+            retry.hidden = false;
+            return;
         }
-        if (request !== openRequest || currentChatId !== chatId || currentChatType !== 'private'
-            || !document.getElementById('chat-room-screen')?.classList.contains('active')) return;
-        document.getElementById('peek-actionsheet')?.classList.add('visible');
+        if (activeRequest !== request) return;
+        hideLoader();
+        if (isSameChat()) menu.classList.add('visible');
+    }
+
+    close.addEventListener('click', hideLoader);
+    retry.addEventListener('click', openPeek);
+    overlay.addEventListener('click', event => {
+        if (event.target === overlay) hideLoader();
+    });
+    document.addEventListener('click', event => {
+        if (event.target?.closest?.('#peek-btn')) openPeek();
     });
 }

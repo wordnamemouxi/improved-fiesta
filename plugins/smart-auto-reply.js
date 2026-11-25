@@ -84,12 +84,14 @@
             return;
         }
         if (androidAlarms.get(chat.id) === due) return;
+        androidAlarms.delete(chat.id);
         if (bridge.scheduleCharacterAlarm(String(chat.id), String(due))) androidAlarms.set(chat.id, due);
     }
 
     window.syncMouxiCharacterAlarms = () => {
         androidAlarms.clear();
         for (const chat of window.db?.characters || []) syncAndroidAlarm(chat);
+        syncUiFromChar();
     };
 
     function clearSmartSchedule(char) {
@@ -447,7 +449,9 @@
             const reason = ch.autoReply.nextPingReason ? `（${ch.autoReply.nextPingReason}）` : '';
             statusLine.innerHTML = '';
             const span = document.createElement('span');
-            span.textContent = `下次预计：${tStr}${reason}`;
+            const alarmPending = window.MouxiAndroid?.scheduleCharacterAlarm
+                && androidAlarms.get(ch.id) !== Number(ch.autoReply.nextPingAt);
+            span.textContent = `下次预计：${tStr}${reason}${alarmPending ? ' · 锁屏预约未设定，请检查系统的闹钟与提醒权限' : ''}`;
             const cancelBtn = document.createElement('button');
             cancelBtn.type = 'button';
             cancelBtn.textContent = '取消';

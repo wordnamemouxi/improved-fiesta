@@ -2058,17 +2058,22 @@ function renderPeekBag(data) {
     });
 }
 
+function peekGenerationKey(char, appType) {
+    return JSON.stringify([char.id, char.activeArchiveId, appType]);
+}
+
 async function generateAndRenderPeekContent(appType, options = {}) {
     const { forceRefresh = false } = options;
 
-    if (generatingPeekApps.has(appType)) {
+    const char = db.characters.find(c => c.id === currentChatId);
+    if (!char) return showToast('无法找到当前角色');
+
+    const generationKey = peekGenerationKey(char, appType);
+    if (generatingPeekApps.has(generationKey)) {
         showToast('该应用内容正在生成中，请稍候...');
         return;
     }
 
-    const char = db.characters.find(c => c.id === currentChatId);
-    if (!char) return showToast('无法找到当前角色');
-    
     if (!char.peekData) char.peekData = {};
 
     if (!forceRefresh && char.peekData[appType]) {
@@ -2137,7 +2142,11 @@ async function generateAndRenderPeekContent(appType, options = {}) {
 
     const requestArchive = char.activeArchiveId;
     const requestPeekData = char.peekData;
-    generatingPeekApps.add(appType);
+    const isCurrentData = () => db.characters.includes(char) && char.activeArchiveId === requestArchive
+        && char.peekData === requestPeekData;
+    const isCurrentView = () => isCurrentData() && currentChatType === 'private' && currentChatId === char.id
+        && requestScreen?.classList.contains('active');
+    generatingPeekApps.add(generationKey);
     let targetContainer;
 
     switch (appType) {
@@ -2184,10 +2193,11 @@ async function generateAndRenderPeekContent(appType, options = {}) {
            break;
        default:
            showToast('无法打开');
-           generatingPeekApps.delete(appType); 
+           generatingPeekApps.delete(generationKey);
            return;
    }
 
+    const requestScreen = document.querySelector('.screen.active');
     try {
         let historySlice = char.history.slice(-30);
         historySlice = filterHistoryForAI(char, historySlice);
@@ -2202,7 +2212,7 @@ async function generateAndRenderPeekContent(appType, options = {}) {
         );
 
         const contentStr = await fetchAiResponse(apiConfig, requestBody, headers, endpoint);
-        if (!db.characters.includes(char) || char.activeArchiveId !== requestArchive || char.peekData !== requestPeekData) return;
+        if (!isCurrentData()) return;
         
         const generatedData = parsePeekXML(contentStr, appType);
 
@@ -2226,7 +2236,8 @@ async function generateAndRenderPeekContent(appType, options = {}) {
         }
 
         char.peekData[appType] = generatedData;
-        await saveData(); 
+        await saveSingleChatFast(char, 'private');
+        if (!isCurrentView()) return;
 
         if (appType === 'messages') {
             renderPeekChatList(generatedData.conversations);
@@ -2251,6 +2262,7 @@ async function generateAndRenderPeekContent(appType, options = {}) {
         }
 
     } catch (error) {
+        if (!isCurrentView()) return;
         showApiError(error);
         const errorMessage = "内容生成失败，请刷新重试。";
         if (appType === 'album') {
@@ -2263,7 +2275,7 @@ async function generateAndRenderPeekContent(appType, options = {}) {
             targetContainer.innerHTML = `<p class="placeholder-text">${errorMessage}</p>`;
         }
     } finally {
-        generatingPeekApps.delete(appType); 
+        generatingPeekApps.delete(generationKey);
     }
 }
 
@@ -2280,7 +2292,7 @@ async function generateBatchPeekContent(appTypes) {
 
     // 检查是否有正在生成的应用
     for (const appType of appTypes) {
-        if (generatingPeekApps.has(appType) || (appType === 'wallet' && peekWallet.isGenerating(char))) {
+        if (generatingPeekApps.has(peekGenerationKey(char, appType)) || (appType === 'wallet' && peekWallet.isGenerating(char))) {
             showToast(`应用 ${peekScreenApps[appType]?.name || appType} 正在生成中，请稍候...`);
             return;
         }
@@ -2289,7 +2301,8 @@ async function generateBatchPeekContent(appTypes) {
     const requestArchive = char.activeArchiveId;
     const requestPeekData = char.peekData ||= {};
     // 标记为正在生成
-    appTypes.forEach(appType => generatingPeekApps.add(appType));
+    const generationKeys = appTypes.map(appType => peekGenerationKey(char, appType));
+    generationKeys.forEach(key => generatingPeekApps.add(key));
     
     // 显示全局 Loading
     const loadingToast = document.createElement('div');
@@ -2340,7 +2353,7 @@ async function generateBatchPeekContent(appTypes) {
         exitBatchMode();
         showToast(`批量生成完成！成功: ${successCount}/${appTypes.length}${walletStatus}`);
     } finally {
-        appTypes.forEach(appType => generatingPeekApps.delete(appType));
+        generationKeys.forEach(key => generatingPeekApps.delete(key));
         if (loadingToast.parentNode) {
             loadingToast.parentNode.removeChild(loadingToast);
         }

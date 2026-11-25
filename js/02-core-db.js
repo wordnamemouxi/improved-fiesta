@@ -1465,6 +1465,17 @@ function initDatabase() {
         memoryAssets: '&id, characterId, [characterId+entryId], [characterId+sha256]',
         memoryPacks: '&id, characterId, &[characterId+packId]'
     });
+    dexieDB.version(10).stores({ voiceRecordings: '&id' }).upgrade(async transaction => {
+        if (!await Dexie.waitFor(Dexie.exists('uwu_voice_input_db'))) return;
+        const legacy = new Dexie('uwu_voice_input_db');
+        legacy.version(1).stores({ recordings: '&id' });
+        try {
+            const recordings = await Dexie.waitFor(legacy.table('recordings').toArray());
+            if (recordings.length) await transaction.table('voiceRecordings').bulkPut(recordings);
+        } finally {
+            legacy.close();
+        }
+    });
     dexieDB.version(7).stores({
         characters: '&id',
         groups: '&id',

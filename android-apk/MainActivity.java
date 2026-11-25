@@ -30,6 +30,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        BackgroundTest.owner = new java.lang.ref.WeakReference<>(this);
         getSystemService(NotificationManager.class).createNotificationChannel(
             new NotificationChannel(CHANNEL, "角色新消息", NotificationManager.IMPORTANCE_HIGH));
         web = new WebView(this);
@@ -163,6 +164,31 @@ public final class MainActivity extends Activity {
                 } else web.evaluateJavascript("window.finishMouxiNotificationPermission?.()", null);
             });
         }
+        @JavascriptInterface public boolean startBackgroundTest(String chatId, String token) {
+            if (!"granted".equals(permission()) || chatId == null || chatId.length() > 512
+                    || token == null || !token.matches("[0-9]{1,20}")
+                    || !BackgroundTest.active.compareAndSet(null, token)) return false;
+            try {
+                startForegroundService(new Intent(MainActivity.this, BackgroundTest.class)
+                    .putExtra("chat", chatId).putExtra("token", token));
+                return true;
+            } catch (RuntimeException e) {
+                BackgroundTest.active.compareAndSet(token, null);
+                return false;
+            }
+        }
+
+        @JavascriptInterface public void finishBackgroundTest(String token, String status) {
+            if (token == null) return;
+            runOnUiThread(() -> {
+                BackgroundTest service = BackgroundTest.current;
+                if (service != null && token.equals(service.token)) {
+                    service.finish("ok".equals(status) ? "生成成功，请查看角色聊天"
+                        : "failed".equals(status) ? "已触发，但接口没有生成有效回复" : null);
+                } else if (token.equals(BackgroundTest.active.get())) BackgroundTest.active.set(null);
+            });
+        }
+
         @JavascriptInterface public void show(String title, String body, String chatId) {
             runOnUiThread(() -> {
                 if (!"granted".equals(permission())) return;
@@ -187,5 +213,83 @@ public final class MainActivity extends Activity {
             String guessed = java.net.URLConnection.guessContentTypeFromName(path);
             return guessed == null ? "application/octet-stream" : guessed;
         }
+    }
+
+    public static final class BackgroundTest extends Service {
+        private static final String CHANNEL = "background_test";
+        private static final int RUNNING_ID = 28102;
+        private static final int RESULT_ID = 28103;
+        static final java.util.concurrent.atomic.AtomicReference<String> active =
+            new java.util.concurrent.atomic.AtomicReference<>();
+        static java.lang.ref.WeakReference<MainActivity> owner = new java.lang.ref.WeakReference<>(null);
+        static BackgroundTest current;
+        private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        private android.os.PowerManager.WakeLock cpu;
+        private String token;
+        private String chat;
+        private NotificationManager notifications;
+
+        private Notification note(String message, boolean running) {
+            Intent tap = new Intent(this, MainActivity.class).putExtra("chatId", chat)
+                .setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            return new Notification.Builder(this, CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("某昔专线 · 后台生成测试")
+                .setContentText(message).setStyle(new Notification.BigTextStyle().bigText(message))
+                .setOnlyAlertOnce(true).setOngoing(running).setAutoCancel(!running)
+                .setContentIntent(PendingIntent.getActivity(this, RESULT_ID, tap,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)).build();
+        }
+
+        @Override public int onStartCommand(Intent intent, int flags, int startId) {
+            if (intent == null) { stopSelf(); return START_NOT_STICKY; }
+            token = intent.getStringExtra("token");
+            chat = intent.getStringExtra("chat");
+            notifications = getSystemService(NotificationManager.class);
+            notifications.createNotificationChannel(new NotificationChannel(CHANNEL,
+                "后台生成测试", NotificationManager.IMPORTANCE_DEFAULT));
+            Notification waiting = note("已预约，30 秒后发起一次生成", true);
+            if (Build.VERSION.SDK_INT >= 34) startForeground(RUNNING_ID, waiting,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE);
+            else startForeground(RUNNING_ID, waiting);
+            current = this;
+            if (token == null || !token.equals(active.get())) { finish(null); return START_NOT_STICKY; }
+            cpu = getSystemService(android.os.PowerManager.class).newWakeLock(
+                android.os.PowerManager.PARTIAL_WAKE_LOCK, "mouxi:test");
+            cpu.acquire(125000);
+            handler.postDelayed(() -> {
+                MainActivity page = owner.get();
+                if (page == null || page.isFinishing() || page.isDestroyed()) {
+                    finish("App 页面已关闭，测试结束");
+                    return;
+                }
+                notifications.notify(RUNNING_ID, note("已到点，正在等待模型生成结果", true));
+                page.web.evaluateJavascript("window.runMouxiBackgroundTest?.("
+                    + JSONObject.quote(chat) + "," + JSONObject.quote(token) + ")", null);
+            }, 30000);
+            handler.postDelayed(() -> {
+                MainActivity page = owner.get();
+                if (page != null && !page.isDestroyed()) page.web.evaluateJavascript(
+                    "window.expireMouxiBackgroundTest?.(" + JSONObject.quote(chat) + "," + JSONObject.quote(token) + ")", null);
+                finish("已到点，但未收到生成结果。页面可能暂停，或模型接口请求超时");
+            }, 120000);
+            return START_NOT_STICKY;
+        }
+
+        private void cleanUp() {
+            handler.removeCallbacksAndMessages(null);
+            if (cpu != null && cpu.isHeld()) cpu.release();
+            if (token != null && token.equals(active.get())) active.set(null);
+            if (current == this) current = null;
+        }
+
+        void finish(String message) {
+            cleanUp();
+            stopForeground(STOP_FOREGROUND_REMOVE);
+            if (message != null) notifications.notify(RESULT_ID, note(message, false));
+            stopSelf();
+        }
+
+        @Override public void onDestroy() { cleanUp(); super.onDestroy(); }
+        @Override public android.os.IBinder onBind(Intent intent) { return null; }
     }
 }

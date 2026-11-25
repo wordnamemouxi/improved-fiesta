@@ -100,6 +100,7 @@
         const entry = test30sMap.get(charId);
         if (!entry) return;
         if (entry.timer) clearTimeout(entry.timer);
+        if (entry.nativeToken && !entry.dispatched) window.MouxiAndroid?.finishBackgroundTest(entry.nativeToken, 'cancel');
         if (entry.tick) clearInterval(entry.tick);
         test30sMap.delete(charId);
     }
@@ -120,6 +121,13 @@
         }
         const targetName = ch.remarkName || ch.realName || '角色';
         const entry = { timer: null, tick: null, targetAt: Date.now() + 30000 };
+        if (window.MouxiAndroid?.startBackgroundTest) {
+            entry.nativeToken = String(entry.targetAt);
+            if (!window.MouxiAndroid.startBackgroundTest(cid, entry.nativeToken)) {
+                window.showToast?.('后台测试未启动，请允许 App 通知，或等上一项测试结束');
+                return;
+            }
+        }
         test30sMap.set(cid, entry);
         refreshTest30sBtn();
         if (typeof window.showToast === 'function') {
@@ -132,6 +140,7 @@
             }
             refreshTest30sBtn();
         }, 1000);
+        if (entry.nativeToken) return;
         entry.timer = setTimeout(async () => {
             clearTest30sForChar(cid);
             refreshTest30sBtn();
@@ -144,6 +153,35 @@
                 console.warn('[SmartAutoReply] 30s test trigger failed:', e);
             }
         }, 30000);
+    }
+
+    if (window.MouxiAndroid?.startBackgroundTest) {
+        const takeTest = (chatId, token) => {
+            const entry = test30sMap.get(chatId);
+            if (entry?.nativeToken !== token) return false;
+            entry.dispatched = true;
+            clearTest30sForChar(chatId);
+            refreshTest30sBtn();
+            return true;
+        };
+        window.expireMouxiBackgroundTest = takeTest;
+        window.runMouxiBackgroundTest = async (chatId, token) => {
+            if (!takeTest(chatId, token)) return;
+            let success = false;
+            try {
+                const chat = window.db?.characters?.find(item => item.id === chatId);
+                if (chat && typeof window.getAiReply === 'function') {
+                    const before = countAssistantMessages(chat);
+                    pendingReasonMap.set(chatId, '随手想起你，自然发一句日常消息打招呼');
+                    await window.getAiReply(chatId, 'private', true);
+                    success = countAssistantMessages(chat) > before;
+                }
+            } catch (error) {
+                console.warn('[SmartAutoReply] Android test failed:', error);
+            } finally {
+                window.MouxiAndroid.finishBackgroundTest(token, success ? 'ok' : 'failed');
+            }
+        };
     }
 
     // 1. 挂载到 buildLivelyPostscript：注入动态排程指令 / 触发由头

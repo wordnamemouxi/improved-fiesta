@@ -1697,7 +1697,7 @@ function makeArchiveName(prefix) {
 
 async function createBlankArchive() {
     const chat = getCurrentChatEntity();
-    if (!chat) return;
+    if (!chat || !canSwitchChatArchive(chat)) return;
     syncChatActiveArchive(chat, true);
 
     const active = getActiveArchive(chat);
@@ -1728,7 +1728,7 @@ function journalBelongsToBranch(journal, includedMessageIds, cutoff) {
 
 async function createBranchArchiveAtMessage(messageId) {
     const chat = getCurrentChatEntity();
-    if (!chat || !Array.isArray(chat.history)) return;
+    if (!chat || !Array.isArray(chat.history) || !canSwitchChatArchive(chat)) return;
     const branchIndex = chat.history.findIndex(message => message.id === messageId);
     if (branchIndex < 0) return;
 
@@ -1772,6 +1772,19 @@ async function createBranchArchiveAtMessage(messageId) {
     showToast('分支存档已创建');
 }
 
+function isChatArchiveBusy(chat) {
+    const call = window.VideoCallModule?.state;
+    return __uwuInFlightChatIds.has(chat.id)
+        || window.VoiceInputPlugin?.isRecordingFor(chat.id, currentChatType)
+        || (call?.isCallActive && call.currentChat === chat);
+}
+
+function canSwitchChatArchive(chat) {
+    if (!isChatArchiveBusy(chat)) return true;
+    showToast('请等当前生成、语音处理或通话结束后再切换存档');
+    return false;
+}
+
 async function switchChatArchive(archiveId) {
     const chat = getCurrentChatEntity();
     if (!chat || chat.activeArchiveId === archiveId) {
@@ -1779,13 +1792,18 @@ async function switchChatArchive(archiveId) {
         return;
     }
 
+    if (!canSwitchChatArchive(chat)) return;
     syncChatActiveArchive(chat, true);
     const archive = chat.archives.find(item => item.id === archiveId);
     if (!archive) return;
+    const type = currentChatType;
     applyArchiveData(chat, archive);
-    await saveData();
-    closeArchiveManager();
-    openChatRoom(currentChatId, currentChatType);
+    if (getCurrentChatEntity() === chat) {
+        closeArchiveManager();
+        openChatRoom(chat.id, type);
+    }
+    await saveSingleChatFast(chat, type);
+    window.syncMouxiCharacterAlarms?.();
 }
 
 async function renameChatArchive(archiveId) {
@@ -1810,13 +1828,16 @@ async function deleteChatArchive(archiveId) {
     if (!archive || !confirm(`确定删除“${archive.name}”吗？该操作不可恢复。`)) return;
 
     if (chat.activeArchiveId === archiveId) {
+        if (!canSwitchChatArchive(chat)) return;
         syncChatActiveArchive(chat, true);
         const fallback = chat.archives.find(item => item.id !== archiveId);
         chat.archives = chat.archives.filter(item => item.id !== archiveId);
+        const type = currentChatType;
         applyArchiveData(chat, fallback);
-        await saveData();
         closeArchiveManager();
-        openChatRoom(currentChatId, currentChatType);
+        openChatRoom(chat.id, type);
+        await saveSingleChatFast(chat, type);
+        window.syncMouxiCharacterAlarms?.();
         showToast('存档已删除');
         return;
     }
@@ -1925,8 +1946,10 @@ function setupChatArchiveSystem() {
 }
 ;
 // --- 隔空投送 (AirDrop) 生图逻辑 ---
-async function receiveAirDropPhoto(messageId, isAuto = false) {
-    const chat = (currentChatType === 'private') ? db.characters.find(c => c.id === currentChatId) : db.groups.find(g => g.id === currentChatId);
+const inFlightAirDrops = new Set();
+
+async function receiveAirDropPhoto(messageId, sourceChat = null) {
+    const chat = sourceChat || getCurrentChatEntity();
     if (!chat) return;
 
     // --- 冷却时间校验 ---
@@ -1943,9 +1966,41 @@ async function receiveAirDropPhoto(messageId, isAuto = false) {
     // -------------------
 
     const message = chat.history.find(m => m.id === messageId);
-    if (!message) return;
+    if (!message || !/\[.*?发来的照片\/视频[：:][^\]]+\]/.test(message.content)) return;
 
     const charName = chat.remarkName || chat.name;
+    const archiveId = chat.activeArchiveId;
+
+    async function generatePhoto(onStage) {
+        if (inFlightAirDrops.has(message)) return false;
+        inFlightAirDrops.add(message);
+        try {
+            onStage?.('正在建立连接');
+            const tags = await generateTagsFromDescription(chat, messageId);
+            if (!tags?.trim()) throw new Error('LLM 未返回有效的提示词，已取消生图');
+            if (chat.activeArchiveId !== archiveId) return false;
+            onStage?.('正在接收中');
+            const image = await generateImageFromTags(tags, chat);
+            if (chat.activeArchiveId !== archiveId) return false;
+            await saveAirDropPhoto(chat.id, image, tags);
+            db.workshopSettings ||= {};
+            db.workshopSettings.lastGenerationTime = Date.now();
+            await saveData();
+            return true;
+        } finally {
+            inFlightAirDrops.delete(message);
+        }
+    }
+
+    if (sourceChat) {
+        try {
+            if (await generatePhoto()) showToast(`已收到 ${charName} 的隔空投送照片，已存入TA相册`);
+        } catch (error) {
+            console.error('AirDrop Error:', error);
+            showToast(`隔空投送失败: ${error.message}`);
+        }
+        return;
+    }
 
     // 1. 显示 AirDrop 弹窗
     const modal = document.getElementById('airdrop-modal');
@@ -1995,26 +2050,13 @@ async function receiveAirDropPhoto(messageId, isAuto = false) {
         windowEl.classList.add('collapsed');
 
         try {
-            // 阶段 1: LLM 扩写
-            loadingText.textContent = '正在建立连接';
-            const tags = await generateTagsFromDescription(chat, messageId);
-            
-            if (!tags || tags.trim() === '') {
-                throw new Error("LLM 未返回有效的提示词，已取消生图");
+            if (!await generatePhoto(stage => { loadingText.textContent = stage; })) {
+                modal.classList.remove('visible');
+                windowEl.classList.remove('collapsed');
+                loading.style.display = 'none';
+                return;
             }
-            
-            // 阶段 2: NovelAI 生图
-            loadingText.textContent = '正在接收中';
-            const base64Image = await generateImageFromTags(tags, chat);
 
-            // 阶段 3: 保存并展示
-            await saveAirDropPhoto(chat.id, base64Image, tags);
-            
-            // 更新最后生图时间
-            if (!db.workshopSettings) db.workshopSettings = {};
-            db.workshopSettings.lastGenerationTime = Date.now();
-            await saveData();
-            
             // 检查是否还在当前聊天室
             if (currentChatId === chat.id && document.getElementById('chat-room-screen').classList.contains('active')) {
                 // 自动展开并显示结果
@@ -2051,10 +2093,6 @@ async function receiveAirDropPhoto(messageId, isAuto = false) {
         }
     };
 
-    // 如果是自动触发，直接调用接受按钮的点击事件
-    if (isAuto) {
-        acceptBtn.onclick();
-    }
 }
 
 async function generateTagsFromDescription(chat, messageId) {
@@ -4292,6 +4330,14 @@ function normalizeThinkingEnvelope(fullResponse, nativeReasoning = '') {
 
 async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChatType, isBackground = false) {
     const rawResponse = fullResponse;
+    let autoAirDropMessage;
+    function addReplyBubble(message) {
+        addMessageBubble(message, targetChatId, targetChatType);
+        if (!autoAirDropMessage && chat.autoAirDropEnabled && message.role === 'assistant'
+                && /\[.*?发来的照片\/视频[：:][^\]]+\]/.test(message.content)) {
+            autoAirDropMessage = message;
+        }
+    }
     if (fullResponse) {
         // 1. 移除 [incipere] 标签
         fullResponse = fullResponse.replace(/\[incipere\]/g, "");
@@ -4559,22 +4605,6 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                 }
             }
 
-            // --- 自动隔空投送检测 ---
-            const photoRegex = /\[(.*?)发来的照片\/视频：(.*?)\]/;
-            const photoMatch = item.content.match(photoRegex);
-            if (photoMatch && chat.autoAirDropEnabled) {
-                // 延迟一点触发，确保消息已经渲染
-                setTimeout(() => {
-                    if (typeof receiveAirDropPhoto === 'function') {
-                        // 找到刚插入的这条消息的 ID
-                        const targetMsg = chat.history[chat.history.length - 1];
-                        if (targetMsg) {
-                            receiveAirDropPhoto(targetMsg.id, true);
-                        }
-                    }
-                }, 500);
-            }
-
             // --- 视频/语音通话邀请检测 ---
             const callInviteRegex = /\[(.*?)向(.*?)发起了(视频|语音)通话\]/;
             const callInviteMatch = item.content.match(callInviteRegex);
@@ -4593,7 +4623,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                     timestamp: Date.now()
                 };
                 chat.history.push(message);
-                addMessageBubble(message, targetChatId, targetChatType);
+                addReplyBubble(message);
                 continue; // 跳过后续处理
             }
 
@@ -4730,7 +4760,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                 }
 
                 chat.history.push(message);
-                addMessageBubble(message, targetChatId, targetChatType);
+                addReplyBubble(message);
                 
                 setTimeout(async () => {
                     message.isWithdrawn = true;
@@ -4783,7 +4813,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             }
                         };
                         chat.history.push(message);
-                        addMessageBubble(message, targetChatId, targetChatType);
+                        addReplyBubble(message);
                     } else {
                         const message = {
                             id: `msg_${Date.now()}_${Math.random()}`,
@@ -4795,7 +4825,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             statusSnapshot: item.statusSnapshot
                         };
                         chat.history.push(message);
-                        addMessageBubble(message, targetChatId, targetChatType);
+                        addReplyBubble(message);
                     }
                 } else {
                     const receivedTransferRegex = new RegExp(`\\[${character.realName}的转账：.*?元；备注：.*?\\]`);
@@ -4818,7 +4848,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                     }
 
                     chat.history.push(message);
-                    addMessageBubble(message, targetChatId, targetChatType);
+                    addReplyBubble(message);
                 }
 
             } else if (targetChatType === 'group') {
@@ -4857,7 +4887,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                         senderId: senderId
                     };
                     group.history.push(message);
-                    addMessageBubble(message, targetChatId, targetChatType);
+                    addReplyBubble(message);
                     continue; // 私聊消息处理完毕，跳过后续普通消息匹配
                 }
 
@@ -4881,7 +4911,7 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             transferStatus: 'pending'
                         };
                         group.history.push(message);
-                        addMessageBubble(message, targetChatId, targetChatType);
+                        addReplyBubble(message);
                     }
                 } else if (nameMatch || item.char) {
                     const senderName = item.char || (nameMatch[1]);
@@ -4897,13 +4927,16 @@ async function handleAiReplyContent(fullResponse, chat, targetChatId, targetChat
                             senderId: sender.id
                         };
                         group.history.push(message);
-                        addMessageBubble(message, targetChatId, targetChatType);
+                        addReplyBubble(message);
                     }
                 }
             }
         }
 
         await saveSingleChatFast(chat, targetChatType);
+        if (chat.autoAirDropEnabled && autoAirDropMessage) {
+            void receiveAirDropPhoto(autoAirDropMessage.id, chat);
+        }
         if (typeof requestAnimationFrame === 'function') {
             requestAnimationFrame(() => {
                 try { renderChatList(); } catch (e) {}
@@ -6973,6 +7006,29 @@ function setupChatRoom() {
     document.getElementById('cancel-reply-btn').addEventListener('click', cancelQuoteReply);
 }
 
+const chatComposerDrafts = new Map();
+let activeComposerKey;
+
+function switchChatComposer(chat, type) {
+    const key = JSON.stringify([type, chat.id, chat.activeArchiveId]);
+    if (activeComposerKey === key) return;
+    if (activeComposerKey && (messageInput.value || currentQuoteInfo)) {
+        chatComposerDrafts.set(activeComposerKey, { text: messageInput.value, quote: currentQuoteInfo });
+    }
+    activeComposerKey = key;
+    const draft = chatComposerDrafts.get(key);
+    chatComposerDrafts.delete(key);
+    messageInput.value = draft?.text || '';
+    cancelQuoteReply();
+    if (draft?.quote && chat.history?.some(message => message.id === draft.quote.id)) {
+        currentQuoteInfo = draft.quote;
+        const preview = document.getElementById('reply-preview-bar');
+        preview.querySelector('.reply-preview-name').textContent = `回复 ${currentQuoteInfo.senderName}`;
+        preview.querySelector('.reply-preview-text').textContent = currentQuoteInfo.content;
+        preview.classList.add('visible');
+    }
+}
+
 function openChatRoom(chatId, type) {
     const chat = (type === 'private') ? db.characters.find(c => c.id === chatId) : db.groups.find(g => g.id === chatId);
     if (!chat) return;
@@ -6988,6 +7044,7 @@ function openChatRoom(chatId, type) {
         saveData();
         renderChatList(); 
     }
+    switchChatComposer(chat, type);
     exitMultiSelectMode();
     cancelMessageEdit();
     chatRoomTitle.textContent = (type === 'private') ? chat.remarkName : chat.name;
@@ -7166,6 +7223,7 @@ async function sendMessage() {
     }
     chat.history.push(message);
     addMessageBubble(message, currentChatId, currentChatType);
+    if (currentQuoteInfo) cancelQuoteReply();
     triggerHapticFeedback('success');
 
     if (chat.history.length > 0 && chat.history.length % 300 === 0) {
@@ -7174,10 +7232,6 @@ async function sendMessage() {
 
     await saveData();
     renderChatList();
-
-    if (currentQuoteInfo) {
-        cancelQuoteReply();
-    }
 }
 
 // 备份提示

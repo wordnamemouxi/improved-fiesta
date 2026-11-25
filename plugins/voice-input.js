@@ -22,7 +22,6 @@
     let holdStartTime = 0;
     let holdTimerId = null;
     let usingTouch = false;
-    let recordingDb = null;
     let playingRecording = null;
     let playbackRequest = 0;
 
@@ -274,11 +273,7 @@
     }
 
     function voiceRecordings() {
-        if (!recordingDb) {
-            recordingDb = new Dexie('uwu_voice_input_db');
-            recordingDb.version(1).stores({ recordings: '&id' });
-        }
-        return recordingDb.table('recordings');
+        return dexieDB.voiceRecordings;
     }
 
     function getVoiceTarget() {
@@ -831,5 +826,6 @@
         bootstrap();
     }
 
-    window.VoiceInputPlugin = { loadConfig, saveConfig, startHoldRecording, endHoldRecording, fillOrSendText, bootstrap };
+    window.VoiceInputPlugin = { loadConfig, saveConfig, startHoldRecording, endHoldRecording, fillOrSendText, bootstrap,
+        isRecordingFor: (id, type) => recordingSession?.target.id === id && recordingSession.target.type === type };
 })();

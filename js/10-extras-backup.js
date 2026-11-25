@@ -3661,6 +3661,11 @@ const backupSnapshot = (() => {
         const tables = dexieDB.tables.filter(table => !isExcludedStore(table.name));
         const stored = await dexieDB.transaction('r', tables, async () =>
             Object.fromEntries(await Promise.all(tables.map(async table => [table.name, await rowsFor(table)]))));
+        if (stored.voiceRecordings) {
+            const chats = [...stored.characters, ...stored.groups].map(row => row.value);
+            const ids = voiceRecordingIds(chats);
+            stored.voiceRecordings = stored.voiceRecordings.filter(row => ids.has(row.key));
+        }
         const secrets = new Set();
         rememberSecretValue(token, secrets);
         for (const [name, rows] of Object.entries(stored)) {
@@ -4845,11 +4850,52 @@ function renderTutorialContent() {
     }
 }
 
+function voiceRecordingIds(chats) {
+    const ids = new Set();
+    const addHistory = history => {
+        for (const message of history || []) {
+            if (message.hasVoiceRecording && typeof message.id === 'string') ids.add(message.id);
+        }
+    };
+    for (const chat of chats) {
+        addHistory(chat.history);
+        for (const archive of chat.archives || []) addHistory(archive.data?.history);
+    }
+    return ids;
+}
+
+async function encodeVoiceRecording({ id, audio }) {
+    const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(audio);
+    });
+    return { id, dataUrl };
+}
+
+function prepareVoiceRecordings(records, chats) {
+    if (!Array.isArray(records)) throw new Error('备份中的语音录音格式无效');
+    const ids = voiceRecordingIds(chats);
+    const result = [];
+    for (const { id, dataUrl } of records) {
+        if (!ids.delete(id) || typeof dataUrl !== 'string') throw new Error('备份中的语音录音与消息不匹配');
+        const match = /^data:(audio\/(?:mp4|webm|ogg|wav|mpeg)(?:;codecs=[\w.,-]+)?);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(dataUrl);
+        if (!match) throw new Error('备份中的语音录音格式无效');
+        const bytes = Uint8Array.from(atob(match[2]), char => char.charCodeAt(0));
+        result.push({ id, audio: new Blob([bytes], { type: match[1] }) });
+    }
+    return result;
+}
+
 // 创建完整的备份数据
 async function createFullBackupData({ includeMemory = false } = {}) {
     const backupData = JSON.parse(JSON.stringify(db));
     backupData._exportVersion = '3.0'; 
     backupData._exportTimestamp = Date.now();
+    const voiceIds = [...voiceRecordingIds([...backupData.characters, ...backupData.groups])];
+    const recordings = await dexieDB.voiceRecordings.bulkGet(voiceIds);
+    backupData.voiceRecordings = await Promise.all(recordings.filter(Boolean).map(encodeVoiceRecording));
     if (includeMemory) backupData.memoryBackups = await memoryRepository.exportAllBackups();
     else {
         for (const character of backupData.characters) {
@@ -4945,6 +4991,9 @@ async function importBackupData(data, { github = false } = {}) {
         const memories = convertedData.memoryBackups === undefined ? null
             : await memoryRepository.prepareAllBackups(convertedData.memoryBackups, targetRoleIds);
         if (memories?.missing) throw new Error('全量备份缺少记忆对应的角色');
+        const restoredVoice = convertedData.voiceRecordings === undefined ? []
+            : prepareVoiceRecordings(convertedData.voiceRecordings,
+                [...(convertedData.characters ?? db.characters), ...(convertedData.groups ?? db.groups)]);
 
         Object.keys(db).forEach(key => {
             if (convertedData[key] !== undefined) {
@@ -4968,12 +5017,13 @@ async function importBackupData(data, { github = false } = {}) {
             await saveData();
             if (github) {
                 const extras = Object.entries(convertedData)
-                    .filter(([key]) => !Object.hasOwn(db, key) && !key.startsWith('_') && key !== 'memoryBackups')
+                    .filter(([key]) => !Object.hasOwn(db, key) && !key.startsWith('_') && key !== 'memoryBackups' && key !== 'voiceRecordings')
                     .map(([key, value]) => ({ key, value }));
                 if (extras.length) await dexieDB.globalSettings.bulkPut(extras);
             }
             await memoryRepository.pruneDeletedCharacters();
             if (memories) await memoryRepository.importAllBackups(memories.prepared);
+            if (restoredVoice.length) await dexieDB.voiceRecordings.bulkPut(restoredVoice);
         });
 
         const duration = Date.now() - startTime;

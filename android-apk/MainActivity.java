@@ -195,41 +195,12 @@ public final class MainActivity extends Activity {
                 } else web.evaluateJavascript("window.finishMouxiNotificationPermission?.()", null);
             });
         }
-        @JavascriptInterface public boolean canScheduleCharacterAlarms() {
-            return Build.VERSION.SDK_INT < 31 || getSystemService(AlarmManager.class).canScheduleExactAlarms();
-        }
-
-        @JavascriptInterface public void openAlarmSettings() {
-            if (Build.VERSION.SDK_INT >= 31) runOnUiThread(() -> {
-                if (!foreground) return;
-                try {
-                    startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
-                        Uri.parse("package:" + getPackageName())));
-                } catch (ActivityNotFoundException ignored) {}
-            });
-        }
-
         @JavascriptInterface public boolean scheduleCharacterAlarm(String chatId, String timestamp) {
-            if (!canScheduleCharacterAlarms() || chatId == null || chatId.isEmpty() || chatId.length() > 512) return false;
-            try {
-                long due = Long.parseLong(timestamp);
-                long now = System.currentTimeMillis();
-                if (due <= 0 || due > now + 172800000L + 60000) return false;
-                CharacterAlarm.schedule(MainActivity.this, chatId, timestamp, Math.max(due, now + 1000));
-                return true;
-            } catch (RuntimeException error) {
-                return false;
-            }
+            return CharacterAlarm.scheduleFromPage(MainActivity.this, chatId, timestamp);
         }
 
         @JavascriptInterface public void cancelCharacterAlarm(String chatId) {
-            if (chatId != null && !chatId.isEmpty() && chatId.length() <= 512) {
-                PendingIntent alarm = CharacterAlarm.intent(MainActivity.this, chatId, "", PendingIntent.FLAG_NO_CREATE);
-                if (alarm != null) {
-                    getSystemService(AlarmManager.class).cancel(alarm);
-                    alarm.cancel();
-                }
-            }
+            CharacterAlarm.cancel(MainActivity.this, chatId);
         }
 
         @JavascriptInterface public boolean startBackgroundTest(String chatId, String token) {
@@ -295,6 +266,28 @@ public final class MainActivity extends Activity {
         static void schedule(Context context, String chat, String token, long at) {
             context.getSystemService(AlarmManager.class).setExactAndAllowWhileIdle(
                 AlarmManager.RTC_WAKEUP, at, intent(context, chat, token, PendingIntent.FLAG_UPDATE_CURRENT));
+        }
+
+        static boolean scheduleFromPage(Context context, String chat, String token) {
+            if (chat == null || chat.isEmpty() || chat.length() > 512) return false;
+            try {
+                long due = Long.parseLong(token);
+                long now = System.currentTimeMillis();
+                if (due <= 0 || due > now + 172800000L + 60000) return false;
+                schedule(context, chat, token, Math.max(due, now + 1000));
+                return true;
+            } catch (RuntimeException error) {
+                return false;
+            }
+        }
+
+        static void cancel(Context context, String chat) {
+            if (chat == null || chat.isEmpty() || chat.length() > 512) return;
+            PendingIntent alarm = intent(context, chat, "", PendingIntent.FLAG_NO_CREATE);
+            if (alarm != null) {
+                context.getSystemService(AlarmManager.class).cancel(alarm);
+                alarm.cancel();
+            }
         }
 
         @Override public void onReceive(Context context, Intent message) {
@@ -397,6 +390,13 @@ public final class MainActivity extends Activity {
             @JavascriptInterface public boolean isAppInForeground() { return false; }
             @JavascriptInterface public String getAlarmChat() { return chat; }
             @JavascriptInterface public String getAlarmToken() { return token; }
+            @JavascriptInterface public boolean scheduleCharacterAlarm(String chatId, String timestamp) {
+                return chatId != null && chatId.equals(chat)
+                    && CharacterAlarm.scheduleFromPage(BackgroundTest.this, chatId, timestamp);
+            }
+            @JavascriptInterface public void cancelCharacterAlarm(String chatId) {
+                if (chatId != null && chatId.equals(chat)) CharacterAlarm.cancel(BackgroundTest.this, chatId);
+            }
             @JavascriptInterface public String permission() {
                 return notifications.areNotificationsEnabled() ? "granted" : "denied";
             }

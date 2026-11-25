@@ -220,7 +220,7 @@
                     pendingReasonMap.delete(chat.id);
                     extra.push(`[本次主动发消息由头] 你之前心里惦记着“${pendingReason}”，现在时间到了自然顺口来找对方聊两句（像真人想起这事一样自然，别生硬照念）。`);
                 }
-                extra.push('[智慧主动消息排程] 每次回复都在正文最末尾附隐藏标签 [NEXT_PING:分钟数|简短理由]。请按聊天内容和当前客观时间判断对方一直没回复时何时再联系。普通日常约120到240分钟，晚安后安排到次日，主动联系后如果没有新话题可以隔久一点。只写整数分钟。');
+                extra.push('[智慧主动消息排程] 每次回复时，结合聊天内容和当前时间判断对方一直没回复时，何时再联系比较自然。有合适的时间才在正文末尾附隐藏标签 [NEXT_PING:分钟数|简短理由]，分钟数写正整数。没有合适的时间就省略标签。');
             }
             if (extra.length) {
                 note = note ? `${note}\n${extra.join('\n')}` : extra.join('\n');
@@ -253,13 +253,18 @@
 
             if (chat.autoReply?.smartEnabled && getLastUserTimestamp(chat) === lastUserTime
                     && countAssistantMessages(chat) > beforeCount) {
-                const minutes = pingMatch ? Number(pingMatch[1]) : (isBackground ? 240 : 120);
-                const now = Date.now();
-                chat.autoReply.nextPingAt = now + Math.max(MIN_MINUTES, Math.min(MAX_MINUTES, minutes)) * 60000;
-                chat.autoReply.nextPingReason = (pingMatch?.[2] || '').trim().slice(0, 60);
-                chat.autoReply.nextPingSetAt = Math.max(now, lastUserTime);
-                await saveChatQuick(chat);
-                syncAndroidAlarm(chat);
+                const minutes = Number(pingMatch?.[1]);
+                if (minutes > 0) {
+                    const now = Date.now();
+                    chat.autoReply.nextPingAt = now + Math.max(MIN_MINUTES, Math.min(MAX_MINUTES, minutes)) * 60000;
+                    chat.autoReply.nextPingReason = (pingMatch[2] || '').trim().slice(0, 60);
+                    chat.autoReply.nextPingSetAt = Math.max(now, lastUserTime);
+                    await saveChatQuick(chat);
+                    syncAndroidAlarm(chat);
+                } else if (chat.autoReply.nextPingAt) {
+                    clearSmartSchedule(chat);
+                    await saveChatQuick(chat);
+                }
                 if (getActiveCharId() === chat.id) syncUiFromChar();
             }
             return result;
@@ -456,7 +461,7 @@
             };
             statusLine.append(span, cancelBtn);
         } else {
-            const nextTxt = swInput.checked ? '已开启 · 按聊天与时间自动约下次联系' : '关闭 · 仅用原版固定间隔';
+            const nextTxt = swInput.checked ? '已开启 · 暂无预约' : '关闭 · 仅用原版固定间隔';
             if (statusLine.textContent !== nextTxt) statusLine.textContent = nextTxt;
         }
     }

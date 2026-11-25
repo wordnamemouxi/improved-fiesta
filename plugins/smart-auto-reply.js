@@ -161,7 +161,7 @@
                     pendingReasonMap.delete(chat.id);
                     extra.push(`[本次主动发消息由头] 你之前心里惦记着“${pendingReason}”，现在时间到了自然顺口来找对方聊两句（像真人想起这事一样自然，别生硬照念）。`);
                 }
-                extra.push('[智慧主动消息排程] 请结合刚才的聊天内容与当前客观时间，自然判断如果对方接下来没主动回你，你大概多少分钟后会再主动找她（以及简短理由）。请在正文最末尾附隐藏标签 [NEXT_PING:分钟数|简短理由]（例如刚说去洗澡可约25分钟、深夜互道晚安可约480分钟到明早、普通日常约120到240分钟；只写整数分钟）。');
+                extra.push('[智慧主动消息排程] 每次回复都在正文最末尾附隐藏标签 [NEXT_PING:分钟数|简短理由]。请按聊天内容和当前客观时间判断对方一直没回复时何时再联系。普通日常约120到240分钟，晚安后安排到次日，主动联系后如果没有新话题可以隔久一点。只写整数分钟。');
             }
             if (extra.length) {
                 note = note ? `${note}\n${extra.join('\n')}` : extra.join('\n');
@@ -172,34 +172,37 @@
         window.buildLivelyPostscript = wrapped;
     }
 
-    // 2. 挂载到 handleAiReplyContent：解析 [NEXT_PING:分钟|理由] 并剥离标签（交由主流程收尾统一轻量落盘，不提前抢锁写库）
+    // 2. 挂载到 handleAiReplyContent：解析并隐藏 [NEXT_PING:分钟|理由]，成功回复后保存下一次预约
     let hookedHandleAi = false;
     function hookHandleAiReplyContent() {
         if (hookedHandleAi || typeof window.handleAiReplyContent !== 'function') return;
         hookedHandleAi = true;
         const origHandle = window.handleAiReplyContent;
         const wrapped = async function (fullResponse, chat, targetChatId, targetChatType, isBackground = false) {
-            let cleaned = fullResponse;
-            if (typeof cleaned === 'string' && targetChatType === 'private' && chat?.autoReply?.smartEnabled) {
-                const thinkEnd = cleaned.lastIndexOf('</thinking>');
-                const head = thinkEnd !== -1 ? cleaned.slice(0, thinkEnd + 11) : '';
-                let body = thinkEnd !== -1 ? cleaned.slice(thinkEnd + 11) : cleaned;
-
-                const pingMatch = body.match(/\[NEXT_PING:(\d{1,4})(?:\|([^\]]*))?\]/i);
-                if (pingMatch) {
-                    const rawMins = Number.parseInt(pingMatch[1], 10);
-                    const mins = Math.max(MIN_MINUTES, Math.min(MAX_MINUTES, Number.isFinite(rawMins) ? rawMins : 90));
-                    const reason = (pingMatch[2] || '').trim().slice(0, 60);
-                    const now = Date.now();
-                    chat.autoReply ||= {};
-                    chat.autoReply.nextPingAt = now + mins * 60 * 1000;
-                    chat.autoReply.nextPingReason = reason;
-                    chat.autoReply.nextPingSetAt = Math.max(now, getLastUserTimestamp(chat));
-                    body = body.replace(/\[NEXT_PING:[^\]]+\]/gi, '').trim();
-                    cleaned = head + body;
-                }
+            if (typeof fullResponse !== 'string' || targetChatType !== 'private' || !chat?.autoReply?.smartEnabled) {
+                return origHandle.call(this, fullResponse, chat, targetChatId, targetChatType, isBackground);
             }
-            return origHandle.call(this, cleaned, chat, targetChatId, targetChatType, isBackground);
+
+            const lastUserTime = getLastUserTimestamp(chat);
+            const beforeCount = countAssistantMessages(chat);
+            const thinkEnd = fullResponse.lastIndexOf('</thinking>');
+            const head = thinkEnd !== -1 ? fullResponse.slice(0, thinkEnd + 11) : '';
+            const body = fullResponse.slice(head.length);
+            const pingMatch = body.match(/\[NEXT_PING:\s*(\d{1,4})\s*(?:\|([^\]]*))?\]/i);
+            const cleaned = head + body.replace(/\[NEXT_PING:[^\]]*\]/gi, '').trim();
+            const result = await origHandle.call(this, cleaned, chat, targetChatId, targetChatType, isBackground);
+
+            if (chat.autoReply?.smartEnabled && getLastUserTimestamp(chat) === lastUserTime
+                    && countAssistantMessages(chat) > beforeCount) {
+                const minutes = pingMatch ? Number(pingMatch[1]) : (isBackground ? 240 : 120);
+                const now = Date.now();
+                chat.autoReply.nextPingAt = now + Math.max(MIN_MINUTES, Math.min(MAX_MINUTES, minutes)) * 60000;
+                chat.autoReply.nextPingReason = (pingMatch?.[2] || '').trim().slice(0, 60);
+                chat.autoReply.nextPingSetAt = Math.max(now, lastUserTime);
+                await saveChatQuick(chat);
+                if (getActiveCharId() === chat.id) syncUiFromChar();
+            }
+            return result;
         };
         wrapped.__smartWrapped = true;
         window.handleAiReplyContent = wrapped;

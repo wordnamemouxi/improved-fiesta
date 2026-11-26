@@ -361,6 +361,7 @@
         const ch = window.db.characters.find(c => c.id === currentChatId);
         if (!ch) return;
         swInput.checked = ch.autoReply?.smartEnabled === true;
+        swInput.closest('.feature-card')?.classList.toggle('is-on', swInput.checked);
         if (ch.autoReply?.smartEnabled && ch.autoReply?.nextPingAt > Date.now()) {
             const d = new Date(ch.autoReply.nextPingAt);
             const tStr = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;

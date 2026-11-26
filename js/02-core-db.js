@@ -1465,6 +1465,7 @@ function initDatabase() {
         memoryAssets: '&id, characterId, [characterId+entryId], [characterId+sha256]',
         memoryPacks: '&id, characterId, &[characterId+packId]'
     });
+    dexieDB.version(11).stores({ theaterRecords: '&id, characterId, kind, [characterId+kind], updatedAt' });
     dexieDB.version(10).stores({ voiceRecordings: '&id' }).upgrade(async transaction => {
         if (!await Dexie.waitFor(Dexie.exists('uwu_voice_input_db'))) return;
         const legacy = new Dexie('uwu_voice_input_db');

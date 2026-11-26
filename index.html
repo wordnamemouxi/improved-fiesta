@@ -14445,6 +14445,10 @@ textarea.mp-transparent-input {
     }
 }
     </style>
+<style>
+.mt-panel{display:flex;flex-direction:column;gap:12px;padding:14px;overflow-wrap:anywhere;box-sizing:border-box}.mt-panel [hidden]{display:none!important}.mt-panel label{display:block;font-size:14px}.mt-panel label>select,.mt-panel label>textarea,.mt-panel label>input:not([type=checkbox]):not([type=range]){display:block;width:100%;box-sizing:border-box;margin-top:6px}.mt-panel input:not([type=checkbox]),.mt-panel textarea,.mt-panel select{font:inherit;color:inherit;background:var(--panel-bg,transparent);border:1px solid #8886;border-radius:8px;padding:9px;min-width:0}.mt-panel textarea{resize:vertical}.mt-panel details,.mt-panel section,.mt-card{padding:12px;border:1px solid #8884;border-radius:12px}.mt-panel summary{cursor:pointer;font-weight:600}.mt-panel details>div,.mt-panel details>label{margin-top:10px}.mt-actions{display:flex;flex-wrap:wrap;gap:7px;margin:8px 0}.mt-actions .btn{width:auto;flex:1 1 auto;min-width:70px;padding:8px;font-size:13px}.mt-card{margin:8px 0}.mt-card small{display:block;opacity:.75;white-space:pre-wrap}.mt-panel #mt-role-panel{display:flex;flex-direction:column;gap:12px}.mt-panel #mt-context label,.mt-panel #mt-world-entries label{padding:5px 0}.mt-panel #mt-body{white-space:pre-wrap;padding:16px 6px;line-height:1.9;font-family:serif;word-break:break-word;user-select:text}.mt-panel #mt-body p{margin:0 0 var(--mt-paragraph,12px)}.mt-panel #mt-status{font-size:13px;white-space:pre-wrap}.mt-panel #mt-preset-editor{margin-top:8px}.mt-panel #mt-preset-editor textarea{min-height:90px}.mt-panel #mt-preset-editor .mt-card{padding:9px}.mt-panel #mt-world-entries{max-height:240px;overflow:auto}
+.mt-panel #mt-pin-list{max-height:280px;overflow:auto}.mt-pin-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #8882}.mt-pin-row:last-child{border-bottom:0}.mt-pin-row span{min-width:0;overflow-wrap:anywhere}.mt-pin-row .btn{width:auto;flex-shrink:0;font-size:13px;padding:7px 10px}.mt-pin-row .btn[aria-pressed=true]{font-weight:600;border:1px solid currentColor}
+</style>
 </head>
 
 <body>
@@ -15055,6 +15059,21 @@ textarea.mp-transparent-input {
                         </div>
                     </details>
 
+                    <details class="api-settings-fold" id="api-theater-settings">
+                        <summary><span class="api-fold-title">小剧场</span><span class="api-fold-description">独立长文创作、酒馆预设</span></summary>
+                        <div class="api-fold-content mt-panel" id="mt-api-panel">
+                            <label>API 来源<select id="mt-api-source"></select></label>
+                            <label>最大输出 Token<input id="mt-max-tokens" type="number" min="1" max="262144" value="16384"></label>
+                            <label><input id="mt-stream" type="checkbox" checked> 流式生成</label>
+                            <label><input id="mt-use-sampling" type="checkbox" checked> 沿用酒馆预设采样参数（如有）</label>
+                            <label>模型推理强度（OpenAI 兼容接口）<select id="mt-reasoning"><option value="">模型默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
+                            <button type="button" class="btn btn-secondary" id="mt-save-api">保存小剧场 API 配置</button>
+                            <hr><strong>创作预设</strong><div id="mt-preset-list"></div>
+                            <div class="mt-actions"><button type="button" class="btn" id="mt-import-preset">导入酒馆 JSON</button><button type="button" class="btn" id="mt-new-preset">新建预设</button></div>
+                            <input type="file" id="mt-preset-file" accept=".json,application/json" hidden>
+                            <div id="mt-preset-editor" hidden></div>
+                        </div>
+                    </details>
                     <details class="api-settings-fold" id="api-voice-settings">
                         <summary>
                             <span class="api-fold-title">语音输入与合成</span>
@@ -15265,6 +15284,10 @@ textarea.mp-transparent-input {
                         </div>
                         <span class="menu-item-label">收藏</span>
                     </div>
+                    <div class="menu-item" data-action="mini-theater">
+                        <div class="menu-icon-wrapper"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg></div>
+                        <span class="menu-item-label">小剧场</span>
+                    </div>
                     <div class="menu-item" data-action="drawing-workshop">
                         <div class="menu-icon-wrapper">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -15283,6 +15306,39 @@ textarea.mp-transparent-input {
         </main>
     </div>
 
+    <div id="mini-theater-screen" class="screen">
+        <header class="app-header"><button class="back-btn" data-target="more-screen">‹</button><div class="title-container"><h1 class="title">小剧场</h1></div><div class="placeholder"></div></header>
+        <main class="content mt-panel" id="mt-main">
+            <label>已保存的指令<select id="mt-saved-instruction"></select></label>
+            <label>创作角色<select id="mt-role"></select></label>
+            <details id="mt-pin-settings"><summary id="mt-pin-summary">管理置顶角色</summary><div id="mt-pin-list"></div></details>
+            <div id="mt-role-panel" hidden>
+                <label>创作预设<select id="mt-preset"></select></label>
+                <div class="mt-actions"><button type="button" class="btn" id="mt-open-settings">创作设置 / 导入预设</button></div>
+                <label>本次创作指令<textarea id="mt-instruction" rows="5" placeholder="输入剧情、AU、视角、文风或字数要求…"></textarea></label>
+                <details>
+                    <summary>保存 / 管理指令</summary>
+                    <label>指令名称<input id="mt-instruction-name" type="text" maxlength="80" placeholder="给这条指令起个名字"></label>
+                    <div class="mt-actions">
+                        <button type="button" class="btn" id="mt-save-instruction">另存为新指令</button>
+                        <button type="button" class="btn" id="mt-update-instruction" disabled>更新选中指令</button>
+                        <button type="button" class="btn" id="mt-delete-instruction" disabled>删除选中指令</button>
+                    </div>
+                </details>
+                <details><summary>上下文设置</summary><div id="mt-context"></div><label>最近聊天条数<select id="mt-history-count"><option>30</option><option selected>100</option><option>300</option><option value="all">全部</option></select></label><div id="mt-world-entries"></div></details>
+                <div class="mt-actions"><button type="button" class="btn btn-primary" id="mt-generate">生成小剧场</button><button type="button" class="btn" id="mt-stop" disabled>停止生成</button></div>
+                <div id="mt-status" role="status" aria-live="polite"></div>
+                <details id="mt-library"><summary>作品记录 / 收藏</summary><label><input type="checkbox" id="mt-favorites"> 只看收藏</label><div id="mt-works"></div></details>
+                <section id="mt-reader" hidden>
+                    <label>作品标题<input id="mt-title" type="text"></label>
+                    <details><summary>阅读设置</summary><label>字号<input id="mt-font" type="range" min="14" max="28" value="18"></label><label>行距<input id="mt-line" type="range" min="1.4" max="2.8" step="0.1" value="1.9"></label><label>段落间距<input id="mt-paragraph" type="range" min="0" max="32" value="12"></label></details>
+                    <article id="mt-body"></article><textarea id="mt-edit-body" rows="12" hidden></textarea>
+                    <div class="mt-actions"><button type="button" class="btn" id="mt-regenerate">重新生成</button><button type="button" class="btn" id="mt-continue">续写</button><button type="button" class="btn" id="mt-rewrite">改写</button><button type="button" class="btn" id="mt-edit">编辑正文</button><button type="button" class="btn" id="mt-favorite">收藏</button><button type="button" class="btn" id="mt-copy">复制全文</button><button type="button" class="btn" id="mt-txt">TXT</button><button type="button" class="btn" id="mt-md">Markdown</button><button type="button" class="btn" id="mt-delete">删除</button></div>
+                    <label>续写 / 改写补充指令<textarea id="mt-followup" rows="3" placeholder="可为续写补充要求，改写时必填"></textarea></label>
+                </section>
+            </div>
+        </main>
+    </div>
     <div id="cot-settings-screen" class="screen">
         <header class="app-header">
             <button class="back-btn" data-target="more-screen">‹</button>
@@ -17253,7 +17309,7 @@ textarea.mp-transparent-input {
 -->
 
 <!-- [1. 基础层] -->
-<script src="./js/02-core-db.js?v=20261121"></script>    <!-- 工具函数：图片压缩、Toast提示、随机数等 -->
+<script src="./js/02-core-db.js?v=20261126-0111"></script>    <!-- 工具函数：图片压缩、Toast提示、随机数等 -->
        <!-- 数据层：Dexie数据库配置、全局变量定义、数据存取 -->
 <script src="./js/03-memory.js?v=20261121"></script>
 
@@ -17269,7 +17325,7 @@ textarea.mp-transparent-input {
 
 
 <!-- [2. 核心交互层] -->
-<script src="./js/04-ui-contacts.js?v=20261121"></script>       <!-- UI交互：界面切换、主屏幕逻辑、右键菜单 -->
+<script src="./js/04-ui-contacts.js?v=20261126-0111"></script>       <!-- UI交互：界面切换、主屏幕逻辑、右键菜单 -->
 <!-- Chat Modules -->
 
 
@@ -17301,7 +17357,7 @@ textarea.mp-transparent-input {
 <script src="./js/08-wallet.js?v=20261121"></script>
 
 
-<script src="./js/10-extras-backup.js?v=20261121"></script>   <!-- 回忆日记生成 -->
+<script src="./js/10-extras-backup.js?v=20261126-0111"></script>   <!-- 回忆日记生成 -->
  <!-- 存储空间HTML注入 -->
    <!-- 存储空间分析图表 -->
    <!-- 桌面小组件设置 -->
@@ -17334,6 +17390,7 @@ textarea.mp-transparent-input {
  <!-- 阅读器视图逻辑 -->
 
 <!-- [4. 程序入口] -->
+<script src="./js/13-mini-theater.js?v=20261126-0112"></script>
 <script src="./js/12-main.js?v=20261125-peek-cache"></script>     <!-- 主入口：初始化(init)、全局事件监听 -->
     <script src="./plugins/avatar-poke.js?v=20261121"></script>
     <script>

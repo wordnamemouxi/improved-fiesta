@@ -4891,6 +4891,7 @@ function prepareVoiceRecordings(records, chats) {
 // 创建完整的备份数据
 async function createFullBackupData({ includeMemory = false } = {}) {
     const backupData = JSON.parse(JSON.stringify(db));
+    backupData.theaterRecords = await dexieDB.theaterRecords.toArray();
     backupData._exportVersion = '3.0'; 
     backupData._exportTimestamp = Date.now();
     const voiceIds = [...voiceRecordingIds([...backupData.characters, ...backupData.groups])];
@@ -4988,6 +4989,7 @@ async function importBackupData(data, { github = false } = {}) {
             }) };
         }
         const targetRoleIds = new Set((convertedData.characters ?? db.characters).map(character => character.id));
+        const theaterRows = convertedData.theaterRecords === undefined ? null : window.MiniTheater.validateBackup(convertedData.theaterRecords, targetRoleIds);
         const memories = convertedData.memoryBackups === undefined ? null
             : await memoryRepository.prepareAllBackups(convertedData.memoryBackups, targetRoleIds);
         if (memories?.missing) throw new Error('全量备份缺少记忆对应的角色');
@@ -5017,13 +5019,15 @@ async function importBackupData(data, { github = false } = {}) {
             await saveData();
             if (github) {
                 const extras = Object.entries(convertedData)
-                    .filter(([key]) => !Object.hasOwn(db, key) && !key.startsWith('_') && key !== 'memoryBackups' && key !== 'voiceRecordings')
+                    .filter(([key]) => !Object.hasOwn(db, key) && !key.startsWith('_') && key !== 'memoryBackups' && key !== 'voiceRecordings' && key !== 'theaterRecords')
                     .map(([key, value]) => ({ key, value }));
                 if (extras.length) await dexieDB.globalSettings.bulkPut(extras);
             }
             await memoryRepository.pruneDeletedCharacters();
             if (memories) await memoryRepository.importAllBackups(memories.prepared);
             if (restoredVoice.length) await dexieDB.voiceRecordings.bulkPut(restoredVoice);
+            if (theaterRows) { await dexieDB.theaterRecords.clear(); await dexieDB.theaterRecords.bulkPut(theaterRows); }
+            await window.MiniTheater.prune();
         });
 
         const duration = Date.now() - startTime;
@@ -5284,6 +5288,8 @@ function initMoreMenu() {
             showToast('日历功能开发中...');
         } else if (action === 'star') {
             showToast('收藏功能开发中...');
+        } else if (action === 'mini-theater') {
+            window.MiniTheater.open();
         } else if (action === 'drawing-workshop') {
             switchScreen('drawing-workshop-screen');
         } else if (action === 'cot-settings') {

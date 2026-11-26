@@ -111,6 +111,7 @@ const switchScreen = (targetId) => {
         }
     }
 
+    if (targetId === 'api-settings-screen') window.MiniTheater?.refreshSettings();
     if (targetId === 'more-screen') {
         renderMoreScreen();
     }
@@ -1843,10 +1844,13 @@ function handleChatListLongPress(chatId, chatType, x, y) {
             label: '删除聊天',
             danger: true,
             action: async () => {
-                const memoryNotice = chatType === 'private' ? '该角色的长期记忆和图片素材也会删除。' : '';
+                const memoryNotice = chatType === 'private' ? '该角色的长期记忆、图片素材和小剧场记录也会删除。' : '';
                 if (confirm(`确定要删除与“${itemName}”的聊天记录吗？${memoryNotice}此操作不可恢复。`)) {
                     if (chatType === 'private') {
-                        await memoryRepository.deleteCharacter(chatId);
+                        await dexieDB.transaction('rw', dexieDB.tables, async () => {
+                            await memoryRepository.deleteCharacter(chatId);
+                            await window.MiniTheater.prune();
+                        });
                         db.characters = db.characters.filter(c => c.id !== chatId);
                     } else {
                         await dexieDB.groups.delete(chatId);

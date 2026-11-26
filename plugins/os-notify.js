@@ -354,6 +354,7 @@
         const saving = chat && savingPreferenceIds.has(chat.id);
         const toggle = card.querySelector('#setting-os-notify-enabled');
         toggle.checked = enabled;
+        card.classList.toggle('is-on', enabled);
         toggle.disabled = !chat || saving || permission === 'unsupported';
         card.querySelector('#setting-os-notify-test').disabled = !enabled || saving || testNotifyInFlight || permission !== 'granted';
 

@@ -534,6 +534,7 @@
         const ch = window.db.characters.find(c => c.id === currentChatId);
         if (!ch) return;
         sw.checked = ch.voiceTts?.enabled === true;
+        sw.closest('.feature-card')?.classList.toggle('is-on', sw.checked);
         vid.value = ch.voiceTts?.voiceId || '';
         prov.value = ch.voiceTts?.provider || '';
         const speedNum = Number(ch.voiceTts?.speed ?? 1.0);
@@ -646,7 +647,10 @@
             return ch;
         };
 
-        sw.addEventListener('change', persistCharVoice);
+        sw.addEventListener('change', () => {
+            card.classList.toggle('is-on', sw.checked);
+            void persistCharVoice();
+        });
         vid.addEventListener('change', persistCharVoice);
         prov.addEventListener('change', persistCharVoice);
         if (spd) {
